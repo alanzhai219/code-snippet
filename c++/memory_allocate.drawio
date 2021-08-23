@@ -1,4 +1,4 @@
-<mxfile host="app.diagrams.net" modified="2021-08-23T10:00:25.936Z" agent="5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.42 Safari/537.36 Edg/93.0.961.24" etag="6jMqru0kUt07iCzK58Do" version="14.9.8" type="github">
+<mxfile host="app.diagrams.net" modified="2021-08-23T10:05:30.529Z" agent="5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.42 Safari/537.36 Edg/93.0.961.24" etag="SZY9tWBSdVj4Izfefe-z" version="14.9.8" type="github">
   <diagram id="Now0JI8XWakYuEt7LE6Z" name="Page-1">
     <mxGraphModel dx="2200" dy="774" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -107,6 +107,12 @@
         </mxCell>
         <mxCell id="b_tqEsNjGLbBsoasMbn9-46" value="&lt;ul&gt;&lt;li&gt;&lt;font color=&quot;#ea6b66&quot;&gt;&lt;i&gt;&lt;b&gt;动态分配，不一定都是分配到堆区，使用alloca可以分配到栈区&lt;/b&gt;&lt;/i&gt;&lt;/font&gt;&lt;/li&gt;&lt;li&gt;&lt;font color=&quot;#ea6b66&quot;&gt;&lt;i&gt;&lt;b&gt;栈区也可使用动态分配alloca&lt;/b&gt;&lt;/i&gt;&lt;/font&gt;&lt;/li&gt;&lt;/ul&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="-40" y="600" width="200" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="b_tqEsNjGLbBsoasMbn9-47" value="1.空间小，&lt;br&gt;2.速度快，&lt;br&gt;3.local属性强，自动释放" style="shape=callout;whiteSpace=wrap;html=1;perimeter=calloutPerimeter;strokeColor=#d79b00;strokeWidth=2;fillColor=#ffe6cc;gradientDirection=south;align=left;" vertex="1" parent="1">
+          <mxGeometry x="590" y="170" width="140" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="b_tqEsNjGLbBsoasMbn9-48" value="1.空间大，&lt;br&gt;2.速度慢，&lt;br&gt;3.全局属性强，手动释放" style="shape=callout;whiteSpace=wrap;html=1;perimeter=calloutPerimeter;strokeColor=#d79b00;strokeWidth=2;fillColor=#ffe6cc;gradientDirection=south;align=left;" vertex="1" parent="1">
+          <mxGeometry x="590" y="520" width="140" height="80" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
