@@ -5,7 +5,7 @@ namespace DS {
 
 template <typename T>
 class List {
-    virtual bool insert(int idx, const T&& elem) = 0;
+    virtual bool insert(int idx, const T& elem) = 0;
     virtual bool remove(int idx) = 0;
     virtual bool set(int idx, const T& elem) = 0;
     virtual bool get(int idx, T& e)  const = 0;
