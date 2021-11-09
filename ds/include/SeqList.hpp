@@ -1,7 +1,7 @@
 #ifndef _SEQLIST_H_
 #define _SEQLIST_H_
 
-#include "List.h"
+#include "List.hpp"
 
 namespace DS {
 
@@ -19,7 +19,7 @@ class SeqList : public List<T> {
         int length() const;
         bool clear();
         T& operator[](int idx);
-        virtual int capacity() const = 0;
+        // virtual int capacity() const = 0;
 };
 
 }   // DS
