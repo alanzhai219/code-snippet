@@ -8,8 +8,9 @@
     So, type and number are necessary to construct static list.
  */
 namespace DS {
+
 template <typename T, int N>
-class StaticList : public SeqList {
+class StaticList : public SeqList<T> {
     protected:
         T m_space[N];
     public:
@@ -21,5 +22,6 @@ class StaticList : public SeqList {
             return N;
         }
 };
+
 } // namespace DS
 #endif // _STATICLIST_H_

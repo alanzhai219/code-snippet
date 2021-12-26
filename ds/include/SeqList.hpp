@@ -15,7 +15,7 @@ class SeqList : public List<T> {
         // insert element
         bool insert(int idx, const T& elem) {
             bool ret = ( 0<= idx) && (idx <= m_length);
-            ret = ret && (m_length < capacity())
+            ret = ret && (m_length < capacity());
             if (ret) {
                 for(auto i = m_length; i>idx; --i) {
                     m_array[i+1] =  m_array[i];
@@ -73,7 +73,7 @@ class SeqList : public List<T> {
             }
         }
 
-        T operator[](int inx) const {
+        T operator[](int idx) const {
             return const_cast<SeqList<T>&>(*this)[idx];
         }
         virtual int capacity() const = 0;
