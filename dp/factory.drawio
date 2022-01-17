@@ -1,1 +1,34 @@
-<mxfile host="app.diagrams.net" modified="2022-01-17T12:28:17.263Z" agent="5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.61 Safari/537.36 Edg/94.0.992.31" version="16.2.4" etag="1KJeFqopZb8jEcLCR378" type="github"><diagram id="whpQzAirbUCptlP0PhfH">UzV2zq1wL0osyPDNT0nNUTV2VTV2LsrPL4GwciucU3NyVI0MMlNUjV1UjYwMgFjVyA2HrCFY1qAgsSg1rwSLBiADYTaQg2Y1AA==</diagram></mxfile>
+<mxfile host="app.diagrams.net" modified="2022-01-17T12:31:03.630Z" agent="5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.61 Safari/537.36 Edg/94.0.992.31" etag="IRTe9G50o9oiNAycLP7y" version="16.2.4" type="github" pages="4">
+  <diagram id="whpQzAirbUCptlP0PhfH" name="simple factory">
+    <mxGraphModel dx="1350" dy="773" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="WLo0U5zFhsnfsdtPmhea" name="factory_method">
+    <mxGraphModel dx="1350" dy="773" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="yzq3hkWYFhPJ59-ap8gm-0" />
+        <mxCell id="yzq3hkWYFhPJ59-ap8gm-1" parent="yzq3hkWYFhPJ59-ap8gm-0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="hWPcO1Ry3Vmhcp4fZX_m" name="abstract_factory">
+    <mxGraphModel dx="1350" dy="773" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="S-KiYKkAjS4pFC9uZZi0-0" />
+        <mxCell id="S-KiYKkAjS4pFC9uZZi0-1" parent="S-KiYKkAjS4pFC9uZZi0-0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="dTN80BIzDLhED0eySwK9" name="template_factory">
+    <mxGraphModel dx="1350" dy="773" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="j8cf1zRjm-Oja9_AfWc6-0" />
+        <mxCell id="j8cf1zRjm-Oja9_AfWc6-1" parent="j8cf1zRjm-Oja9_AfWc6-0" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
