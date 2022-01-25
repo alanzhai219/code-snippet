@@ -24,7 +24,9 @@ class LinkList : public List<T> {
             std::cout << "Construct LinkList\n";
             m_header = new Node(0, nullptr);
             /*
-                m_length initialzied
+                It may cause Segmenatation Fault.
+                m_header->value = 0;
+                m_header->next = nullptr;
             */
             m_length = 0;
         }
@@ -33,10 +35,7 @@ class LinkList : public List<T> {
             /* crt is short for current */
             auto* crtNode = position(m_length);
             auto* tmp = new Node(elem, nullptr);
-            // Node* tmp = new Node();
-            // tmp->value = elem;
-            // tmp->next = nullptr;
-            crtNode->next = tmp;//new Node(elem, nullptr);
+            crtNode->next = tmp;
             m_length++;
             return true;
         }
