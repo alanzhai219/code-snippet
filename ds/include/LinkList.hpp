@@ -16,7 +16,7 @@ class LinkList : public List<T> {
                 T value;
                 Node* next;
         };
-        
+
         LinkList() {
             /*
                 m_header initialized
@@ -104,7 +104,7 @@ class LinkList : public List<T> {
             }
             return ret;
         }
-        
+
         int length() const override {
             return m_length;
         }
@@ -116,6 +116,10 @@ class LinkList : public List<T> {
                 delete toDel;
             }
             m_length = 0;
+        }
+
+        void reverse() {
+          // TODO(zhaixiuchuan)
         }
 
         void dump() {
