@@ -1,6 +1,4 @@
-#include "ScopeGuard.hpp"
-
-using namespace sg::detail;
+#include "ScopeGuard2.hpp"
 
 void TestScopeGuard() {    
     std::function < void()> f = [] {
