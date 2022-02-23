@@ -1,1 +1,110 @@
-<mxfile host="app.diagrams.net" modified="2022-02-23T02:42:31.134Z" agent="5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.61 Safari/537.36" version="16.6.1" etag="hclUqFzk9kmQg0jIcBNL" type="github"><diagram id="wHnqkTrfdr72bMph6DxP">UzV2zq1wL0osyPDNT0nNUTV2VTV2LsrPL4GwciucU3NyVI0MMlNUjV1UjYwMgFjVyA2HrCFY1qAgsSg1rwSLBiADYTaQg2Y1AA==</diagram></mxfile>
+<mxfile host="app.diagrams.net" modified="2022-02-23T06:18:46.386Z" agent="5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.61 Safari/537.36" etag="PBnZf_R0vT2mMOhTzAyF" version="16.6.1" type="github">
+  <diagram id="wHnqkTrfdr72bMph6DxP" name="Page-1">
+    <mxGraphModel dx="1350" dy="773" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-2" target="U3nHqNQ-i-xP5MKKBlo1-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-2" value="&lt;font style=&quot;font-size: 14px&quot;&gt;&lt;b&gt;类使用运算符&lt;br&gt;A a;&lt;br&gt;auto c = a + 2;&lt;br&gt;&lt;/b&gt;&lt;/font&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="320" y="170" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=14;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-3" target="U3nHqNQ-i-xP5MKKBlo1-8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-12" value="NO" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=14;" vertex="1" connectable="0" parent="U3nHqNQ-i-xP5MKKBlo1-9">
+          <mxGeometry x="-0.2632" y="-1" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-18" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=14;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-3" target="U3nHqNQ-i-xP5MKKBlo1-17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-25" value="YES" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=14;" vertex="1" connectable="0" parent="U3nHqNQ-i-xP5MKKBlo1-18">
+          <mxGeometry x="-0.1579" y="-1" relative="1" as="geometry">
+            <mxPoint x="20" y="1" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-3" value="&lt;font style=&quot;font-size: 14px&quot;&gt;&lt;b&gt;运算符重载？&lt;/b&gt;&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="320" y="290" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=14;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-8" target="U3nHqNQ-i-xP5MKKBlo1-10">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="680" y="430" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-13" value="NO" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=14;" vertex="1" connectable="0" parent="U3nHqNQ-i-xP5MKKBlo1-11">
+          <mxGeometry x="-0.3684" y="1" relative="1" as="geometry">
+            <mxPoint x="-1" y="45" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-15" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=14;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-8" target="U3nHqNQ-i-xP5MKKBlo1-14">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="520" y="430" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-16" value="YES" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=14;" vertex="1" connectable="0" parent="U3nHqNQ-i-xP5MKKBlo1-15">
+          <mxGeometry x="-0.4615" y="2" relative="1" as="geometry">
+            <mxPoint x="-2" y="50" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-8" value="&lt;font style=&quot;font-size: 14px&quot;&gt;&lt;b&gt;类型转换函数？&lt;/b&gt;&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="540" y="400" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-10" value="错误；&lt;br&gt;类的对象无法转换为" style="whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="620" y="520" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-14" value="正确；&lt;br&gt;类的对象可以转换为其他类型，实现计算" style="whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="460" y="520" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-20" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=14;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-17" target="U3nHqNQ-i-xP5MKKBlo1-19">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="80" y="430" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-23" value="YES" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=14;" vertex="1" connectable="0" parent="U3nHqNQ-i-xP5MKKBlo1-20">
+          <mxGeometry x="0.0933" y="3" relative="1" as="geometry">
+            <mxPoint x="-3" y="18" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-22" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=14;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-17" target="U3nHqNQ-i-xP5MKKBlo1-21">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="240" y="430" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-17" value="&lt;font style=&quot;font-size: 14px&quot;&gt;&lt;b&gt;成员&lt;br&gt;运算符重载？&lt;/b&gt;&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="100" y="400" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-19" value="正确；&lt;br&gt;注意成员运算符重载具有左结合性" style="whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="20" y="520" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-21" value="&lt;span&gt;正确；&lt;/span&gt;&lt;br&gt;&lt;span&gt;注意全局运算符重载具有交换性&lt;/span&gt;" style="whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="180" y="520" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-24" value="NO" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=14;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="570" y="500" as="geometry">
+            <mxPoint x="-329" y="-14" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-31" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=14;" edge="1" parent="1" source="U3nHqNQ-i-xP5MKKBlo1-29" target="U3nHqNQ-i-xP5MKKBlo1-30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-29" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;flipH=1;fontSize=14;strokeWidth=2;rotation=91;strokeColor=#EA6B66;" vertex="1" parent="1">
+          <mxGeometry x="369.99" y="281.4" width="20" height="340" as="geometry" />
+        </mxCell>
+        <mxCell id="U3nHqNQ-i-xP5MKKBlo1-30" value="&lt;font style=&quot;font-size: 12px&quot; color=&quot;#ea6b66&quot;&gt;&lt;i&gt;运算符重载和类型转换函数同时存在&lt;br&gt;编译器会混淆，无法确定应该走类型转换还是走运算符重载&lt;/i&gt;&lt;/font&gt;" style="whiteSpace=wrap;html=1;fontSize=14;strokeColor=#EA6B66;rounded=1;strokeWidth=2;align=left;" vertex="1" parent="1">
+          <mxGeometry x="320" y="480" width="120" height="80" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
