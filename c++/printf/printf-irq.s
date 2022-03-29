@@ -1,8 +1,8 @@
-.section .data
+.data
 output:
   .ascii "Hello world\n"
 
-.section .text
+.text
 .global main
 main:
   movq $4, %rax       # No.4 syscall: write
