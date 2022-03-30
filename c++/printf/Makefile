@@ -23,10 +23,14 @@ printf-syscall: printf-syscall.s
 	ld -o $(BUILD)/$@.out $(BUILD)/$@.o --entry main
 
 printf-call32: printf-call32.s
-	gcc $^ -m32 -o $(BUILD)/$@.out
+	as --32 -o $(BUILD)/$@.o $^
+	ld -m elf_i386 -o $(BUILD)/$@.out $(BUILD)/$@.o --entry main -lc -I/lib/ld-linux.so.2
+	# gcc $^ -m32 -o $(BUILD)/$@.out
 
 printf-call64: printf-call64.s
-	gcc $^ -o $(BUILD)/$@.out -no-pie
+	as -o $(BUILD)/$@.o $^
+	ld -o $(BUILD)/$@.out $(BUILD)/$@.o --entry main -lc -I/lib64/ld-linux-x86-64.so.2
+	# gcc $^ -o $(BUILD)/$@.out -no-pie
 
 
 # all: printf-std printf-write printf-syswrite printf-irq printf-syscall
