@@ -1,17 +1,5 @@
 #include <iostream>
-#include "ArrayRef.h"
-
-namespace at {
-    using namespace c10;
-    
-    enum ScalarType {
-        Float=0,
-        Half,
-        Int,
-        Long,
-        Double
-    };
-}
+#include "ArrayRef2.h"
 
 int main() {
     at::ArrayRef<at::ScalarType> types = {at::ScalarType::Float,

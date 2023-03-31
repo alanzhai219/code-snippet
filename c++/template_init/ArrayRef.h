@@ -75,19 +75,19 @@ class ArrayRef final {
 
   /// Construct an ArrayRef from a single element.
   // TODO Make this explicit
-  constexpr ArrayRef(const T& OneElt) : Data(&OneElt), Length(1) {}
+  // constexpr ArrayRef(const T& OneElt) : Data(&OneElt), Length(1) {}
 
   /// Construct an ArrayRef from a pointer and length.
-  C10_HOST_CONSTEXPR_EXCEPT_WIN_CUDA ArrayRef(const T* data, size_t length)
-      : Data(data), Length(length) {
-    debugCheckNullptrInvariant();
-  }
+  // C10_HOST_CONSTEXPR_EXCEPT_WIN_CUDA ArrayRef(const T* data, size_t length)
+  //     : Data(data), Length(length) {
+  //   debugCheckNullptrInvariant();
+  // }
 
   /// Construct an ArrayRef from a range.
-  C10_HOST_CONSTEXPR_EXCEPT_WIN_CUDA ArrayRef(const T* begin, const T* end)
-      : Data(begin), Length(end - begin) {
-    debugCheckNullptrInvariant();
-  }
+  // C10_HOST_CONSTEXPR_EXCEPT_WIN_CUDA ArrayRef(const T* begin, const T* end)
+  //     : Data(begin), Length(end - begin) {
+  //   debugCheckNullptrInvariant();
+  // }
 
   /// Construct an ArrayRef from a SmallVector. This is templated in order to
   /// avoid instantiating SmallVectorTemplateCommon<T> whenever we
@@ -100,36 +100,36 @@ class ArrayRef final {
   // }
 
   /// Construct an ArrayRef from a generic Container.
-  template <
-      typename Container,
-      typename = std::enable_if_t<std::is_same<
-          std::remove_const_t<decltype(std::declval<Container>().data())>,
-          T*>::value>>
-  /* implicit */ ArrayRef(const Container& container)
-      : Data(container.data()), Length(container.size()) {
-    debugCheckNullptrInvariant();
-  }
+  // template <
+  //     typename Container,
+  //     typename = std::enable_if_t<std::is_same<
+  //         std::remove_const_t<decltype(std::declval<Container>().data())>,
+  //         T*>::value>>
+  // /* implicit */ ArrayRef(const Container& container)
+  //     : Data(container.data()), Length(container.size()) {
+  //   debugCheckNullptrInvariant();
+  // }
 
   /// Construct an ArrayRef from a std::vector.
   // The enable_if stuff here makes sure that this isn't used for
   // std::vector<bool>, because ArrayRef can't work on a std::vector<bool>
   // bitfield.
-  template <typename A>
-  /* implicit */ ArrayRef(const std::vector<T, A>& Vec)
-      : Data(Vec.data()), Length(Vec.size()) {
-    static_assert(
-        !std::is_same<T, bool>::value,
-        "ArrayRef<bool> cannot be constructed from a std::vector<bool> bitfield.");
-  }
+  // template <typename A>
+  // /* implicit */ ArrayRef(const std::vector<T, A>& Vec)
+  //     : Data(Vec.data()), Length(Vec.size()) {
+  //   static_assert(
+  //       !std::is_same<T, bool>::value,
+  //       "ArrayRef<bool> cannot be constructed from a std::vector<bool> bitfield.");
+  // }
 
   /// Construct an ArrayRef from a std::array
-  template <size_t N>
-  /* implicit */ constexpr ArrayRef(const std::array<T, N>& Arr)
-      : Data(Arr.data()), Length(N) {}
+  // template <size_t N>
+  // /* implicit */ constexpr ArrayRef(const std::array<T, N>& Arr)
+  //     : Data(Arr.data()), Length(N) {}
 
   /// Construct an ArrayRef from a C array.
-  template <size_t N>
-  /* implicit */ constexpr ArrayRef(const T (&Arr)[N]) : Data(Arr), Length(N) {}
+  // template <size_t N>
+  // /* implicit */ constexpr ArrayRef(const T (&Arr)[N]) : Data(Arr), Length(N) {}
 
   /// Construct an ArrayRef from a std::initializer_list.
   /* implicit */ constexpr ArrayRef(const std::initializer_list<T>& Vec)
