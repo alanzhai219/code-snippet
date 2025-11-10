@@ -26,7 +26,7 @@ struct jit_brgemm_params_t {
 // 2. 完整的 JIT 内核类 (包含您的 generate() 函数)
 // -----------------------------------------------------------------
 
-class jit_brgemm_decompress_kernel_t : public Xbyak::CodeGenerator {
+class jit_decompress_kernel_t : public Xbyak::CodeGenerator {
 public:
     // --- 寄存器定义 ---
     // 假设是 Linux x64 ABI: param1 在 rdi
@@ -65,7 +65,7 @@ public:
     int blocks_;
 
     // --- 构造函数 ---
-    jit_brgemm_decompress_kernel_t(int blocks) : Xbyak::CodeGenerator(4096 * 16), blocks_(blocks) {
+    jit_decompress_kernel_t(int blocks) : Xbyak::CodeGenerator(4096 * 16), blocks_(blocks) {
         generate(); // JIT 编译在构造时发生
     }
 
@@ -252,7 +252,7 @@ int main() {
     std::cout << " - Output buffer size: " << output_size << " bytes" << std::endl;
 
     // --- 3. JIT 编译内核 ---
-    jit_brgemm_decompress_kernel_t kernel(num_blocks);
+    jit_decompress_kernel_t kernel(num_blocks);
 
     // 获取指向 JIT 生成的机器码的函数指针
     auto* generated_func = kernel.getCode<void (*)(jit_brgemm_params_t*)>();
