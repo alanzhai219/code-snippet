@@ -20,12 +20,47 @@ struct call_params_t {
 // 使用 Xbyak::CodeGenerator 替换 jit_generator_t
 class SparseDecompressKernel : public Xbyak::CodeGenerator {
 public:
-    // 固定的块大小参数
+    // CodeGenerator 构造函数: (Code Size, JIT mode)
+    SparseDecompressKernel(const int mat_K_blk) : Xbyak::CodeGenerator(4096 * 4) {
+        // 检查 CPU feature 是否支持 AVX512 (简化检查)
+        if (!m_cpu.has(Xbyak::util::Cpu::tAVX512F)) {
+            throw std::runtime_error("AVX512 is not supported.");
+        }
+        
+        K_blk = mat_K_blk;
+
+        b_blk_sz_ = 64; // aligned with zmm width
+        blk_sz_ = a_outter_blk_sz_ * b_blk_sz_ * a_inner_blk_sz_; // 16 * 64 * 4 = 4096
+        nblks_to_decompress_ = K_blk * b_blk_sz_ / blk_sz_; // 简化为只处理一个 K 块
+
+        generate_code(); // 调用核心生成逻辑
+    }
+
+    // 获取 JIT 函数指针
+    void (*get_jit_func() const)(call_params_t *) {
+        return reinterpret_cast<void (*)(call_params_t *)>(getCode());
+    }
+
+public:
+    int K_blk;
+
+    // 要解压的块数量 (Number of Blocks)
+    // 这个变量是用来控制 JIT Kernel 需要处理多少个 blk_sz_ 大小的逻辑块。
+    int nblks_to_decompress_ = 0; // 简化为只处理一个 K 块
+
+    // 总块大小 (Total Block Size)：这是由前三个参数计算得出的一个完整的逻辑块包含的元素总数：
+    int blk_sz_ = 0; // 16 * 64 * 4 = 4096
+
+    // (Inner Block Size on B/Rows): 用于一次处理的基本块的行数, 通常是N维度 or B矩阵的行。
+    // 在这个 JIT Kernel 中，它与 ZMM 寄存器 (64 字节/行) 的宽度相匹配。
+    int b_blk_sz_ = 0;
+
+    // Outer Block Size on K/Columns: 外层块大小: 通常是 K 维度上的一个更大块，用于提高数据局部性和并行度
+    // 16 可能是与缓存线或 L2/L3 缓存大小相关的常数。
     const int a_outter_blk_sz_ = 16;
+
+    // Inner Block Size on K/Columns: 内层块大小: 通常是K维度 or A矩阵的列
     const int a_inner_blk_sz_ = 4;
-    const int b_blk_sz_ = 64; // 从原代码逻辑推断
-    const int blk_sz_ = a_outter_blk_sz_ * b_blk_sz_ * a_inner_blk_sz_; // 16 * 64 * 4 = 4096
-    const int nblks_to_decompress_ = 1; // 简化为只处理一个 K 块
 
 private:
     // 寄存器映射 (与原代码保持一致)
@@ -36,143 +71,158 @@ private:
     const Xbyak::Reg64 reg_popcnt_tmp = r12;
     const Xbyak::Reg64 reg_popcnt = rcx; // 用于 popcnt 结果和 shl 计数
 
+    Xbyak::Reg64 param1 = rdi;
+
     // Unroll Factor (UF) 辅助寄存器和 ZMM/Opmask
     const int unroll_factor = 4;
-    const Xbyak::Reg64 reg_mask_tmp_arr[4] = {r13, r14, r15, rax};
-    const Xbyak::Zmm zmm_arr[4] = {Xbyak::Zmm(25), Xbyak::Zmm(26), Xbyak::Zmm(27), Xbyak::Zmm(28)};
-    const Xbyak::Opmask k_arr[4] = {k1, k2, k3, k4};
 
-    Xbyak::util::Cpu m_cpu;
+    Xbyak::Zmm get_zmm(int idx) {
+        switch (idx) {
+            case 0: return Xbyak::Zmm(25);
+            case 1: return Xbyak::Zmm(26);
+            case 2: return Xbyak::Zmm(27);
+            case 3: return Xbyak::Zmm(28);
+            default: assert(!"incorrect index"); return Xbyak::Zmm(0);
+        }
+    }
 
-    void prepare_load_mask(const Xbyak::Opmask &opmask) {
-        // 实现原 get_load_mask 的功能：将 reg_popcnt 中的值转换为一个低位设置了 'reg_popcnt' 位的 Opmask。
-        // 由于 shl(64) == shl(0) 的问题，需要拆分移位操作。
+    Xbyak::Opmask get_opmask(int idx) {
+        switch (idx) {
+            case 0: return k1; break;
+            case 1: return k2; break;
+            case 2: return k3; break;
+            case 3: return k4; break;
+            default: assert(!"incorrect index"); return k0;
+        }
+    }
 
-        // 备份 reg_popcnt (实际需要加载的字节数)
-        mov(reg_popcnt_tmp, reg_popcnt); 
-        
-        // 1. 计算掩码：2^N - 1
+    Xbyak::Opmask get_load_mask(int idx) {
+        // This function prepares a load mask for loading packed values. The minimum
+        // and maximum number of bits that can be set is 0 and 64 respectively.
+        // Since `shl` instruction doesn't work when the `count` operand is 64
+        // (the instruction actually uses `count % 64` instead of just `count`)
+        // we have to split 1 shift into 2 shifts (3 if there is a tail).
+        //
+        //
+        // The following pseudo-code is implemented in JIT below:
+        // shift = reg_popcnt / 2;
+        // res = 1;
+        // res = res << shift;
+        // res = res << shift;
+        // shift_tail = reg_popcnt % 2;
+        // res = res << shift_tail;
+
+        // Save original number of bits set in 1.
+        mov(reg_popcnt_tmp, reg_popcnt);
+
         mov(reg_tmp, 1);
-        
-        // 2. 分两次移位 (shift = N/2)
-        shr(reg_popcnt, 1); // reg_popcnt = N / 2
+
+        // shift = reg_popcnt / 2
+        shr(reg_popcnt, 1);
+
+        // Apply shift two times.
         shl(reg_tmp, reg_popcnt.cvt8());
         shl(reg_tmp, reg_popcnt.cvt8());
 
-        // 3. 计算尾数移位 (shift_tail = N % 2)
-        mov(reg_popcnt, reg_popcnt_tmp); // 恢复 N
-        and_(reg_popcnt, 1); // reg_popcnt = N % 2
+        // Calculate shift_tail = reg_popcnt % 2.
+        mov(reg_popcnt, reg_popcnt_tmp);
+        and_(reg_popcnt, 1);
 
-        // 4. 应用尾数移位
+        // Apply shift_tail.
         shl(reg_tmp, reg_popcnt.cvt8());
 
-        // 5. 减 1 得到掩码 (2^N - 1)
         sub(reg_tmp, 1);
 
-        // 6. 恢复 reg_popcnt 并写入 Opmask
-        mov(reg_popcnt, reg_popcnt_tmp); // 恢复 N (供 add(reg_src_ptr, reg_popcnt) 使用)
+        // Restore the value (used to advance the pointer to packed values).
+        mov(reg_popcnt, reg_popcnt_tmp);
+
+        auto opmask = get_opmask(idx);
         kmovq(opmask, reg_tmp);
+
+        return opmask;
     }
+
+    Xbyak::Opmask get_expand_mask(int idx) {
+        return get_opmask(idx);
+    }
+
+    Xbyak::Reg64 get_reg_mask_tmp(int idx) {
+        switch (idx) {
+            case 0: return r13;
+            case 1: return r14;
+            case 2: return r15;
+            case 3: return rax;
+            default: assert(!"incorrect index"); return Xbyak::Reg64(0);
+        }
+    };
+
+    Xbyak::util::Cpu m_cpu;
 
     // 核心代码生成逻辑
     void generate_code() {
         // Xbyak 约定：param1 是第一个参数（本例中为 call_params_t*）
-        Xbyak::Label loop_b_start, loop_b_end;
 
-        // 1. 设置调用约定 (Windows: rcx/rdx/r8/r9; Linux: rdi/rsi/rdx/rcx)
-        // 假设使用 Linux 64-bit ABI (param1 in rdi) 或 Windows 64-bit ABI (param1 in rcx)
-        // 为了跨平台兼容性，使用 push/pop 来保存和恢复 caller-save 寄存器
-        
         // Xbyak::CodeGenerator 默认有 preamble/postamble，但为了纯粹性，手动实现
         // 手动保存 caller-save 寄存器 r8, r9, r10, r11, r12, r13, r14, r15, rax, rcx
-        push(r13); push(r14); push(r15); push(rax); push(rcx); 
-        push(r8); push(r9); push(r10); push(r11); push(r12); // 保存 callee-save/temp 
+        push(r13);
+        push(r14);
+        push(r15);
+        push(rax);
+        push(rcx); 
+        push(r8);
+        push(r9);
+        push(r10);
+        push(r11);
+        push(r12); // 保存 callee-save/temp 
 
         // 2. 从 call_params_t* 中加载指针
-        // 假设 call_params_t* 已经在 rdi (Linux) 或 rcx (Windows)
-#ifdef _WIN64
-        const Xbyak::Reg64 reg_params = rcx;
-#else // Linux
-        const Xbyak::Reg64 reg_params = rdi;
-#endif
+        mov(reg_bitmask_ptr, ptr[param1 + GET_OFF(bitmask_ptr)]);
+        mov(reg_dst_ptr, ptr[param1 + GET_OFF(dst_ptr)]);
+        mov(reg_src_ptr, ptr[param1 + GET_OFF(src_ptr)]);
 
-        mov(reg_bitmask_ptr, ptr[reg_params + GET_OFF(bitmask_ptr)]);
-        mov(reg_dst_ptr, ptr[reg_params + GET_OFF(dst_ptr)]);
-        mov(reg_src_ptr, ptr[reg_params + GET_OFF(src_ptr)]);
+        assert(unroll_factor == 4);
 
-        // 3. 循环 nblks_to_decompress_ 次 (此处简化为 nblks_to_decompress_ = 1，因此省略外层循环)
-        const int nbytes_per_load = 64; // ZMM 寄存器的字节数
+        for (int b = 0; b < nblks_to_decompress_; b++) {
+            const int blk_offset = b * blk_sz_;
+            const int bitmask_off = blk_offset / CHAR_BIT;
+            const int nbytes_per_load = 64;
 
-        const int blk_offset = 0; // 块偏移量
-        const int bitmask_off = blk_offset / CHAR_BIT; // 位掩码偏移量
+            for (int i = 0; i < b_blk_sz_; i += unroll_factor) {
+                for (int uf = 0; uf < unroll_factor; uf++) {
+                    auto reg_mask_tmp = get_reg_mask_tmp(uf);
+                    mov(reg_mask_tmp,
+                            ptr[reg_bitmask_ptr + (i + uf) * sizeof(uint64_t)
+                                    + bitmask_off]);
+                    popcnt(reg_popcnt, reg_mask_tmp);
 
-        // 4. i 循环：i < b_blk_sz_ (64)，步长为 unroll_factor (4)
-        Xbyak::Reg64 reg_i = r14;
-        mov(reg_i, 0); // i = 0
+                    auto load_mask = get_load_mask(uf);
+                    auto zmm_reg = get_zmm(uf);
+                    vmovdqu8(zmm_reg | load_mask | T_z, ptr[reg_src_ptr]);
+                    add(reg_src_ptr, reg_popcnt);
 
-    L("i_loop_start");
-        cmp(reg_i, b_blk_sz_);
-        jge("i_loop_end");
-
-        for (int uf = 0; uf < unroll_factor; uf++) {
-            auto reg_mask_tmp = reg_mask_tmp_arr[uf];
-            auto zmm_reg = zmm_arr[uf];
-            auto opmask = k_arr[uf];
-
-            // A. Load Bitmask & Popcount
-            // 访问的掩码地址: bitmask_ptr + (i + uf) * sizeof(uint64_t) + bitmask_off
-            mov(reg_mask_tmp, 
-                ptr[reg_bitmask_ptr + reg_i + (uf * sizeof(uint64_t)) + bitmask_off]); // reg_i 已经是字节偏移，所以直接加
-
-            popcnt(reg_popcnt, reg_mask_tmp); // rcx = 稀疏元素个数
-
-            // B. Prepare Load Mask (k1-k4)
-            prepare_load_mask(opmask); // 内部会用到 r11, r12, rcx
-
-            // C. Load Packed Data
-            vmovdqu8(zmm_reg | opmask | T_z, ptr[reg_src_ptr]);
-            add(reg_src_ptr, reg_popcnt); // 源指针前进 reg_popcnt 个字节
-
-            // D. Prepare Expand Mask (k1-k4)
-            kmovq(opmask, reg_mask_tmp); // 将原始 64-bit 掩码写入 Opmask
-
-            // E. Decompress (Expand)
-            vpexpandb(zmm_reg | opmask | T_z, zmm_reg);
-
-            // F. Store Decompressed Data
-            // 目标地址: dst_ptr + blk_offset + (i + uf) * nbytes_per_load
-            mov(reg_tmp, reg_i);
-            add(reg_tmp, uf * nbytes_per_load);
-            vmovdqu8(ptr[reg_dst_ptr + reg_tmp], zmm_reg); 
+                    auto expand_mask = get_expand_mask(uf);
+                    kmovq(expand_mask, reg_mask_tmp);
+                    vpexpandb(zmm_reg | expand_mask | T_z, zmm_reg);
+                    vmovdqu8(ptr[reg_dst_ptr + blk_offset
+                                     + (i + uf) * nbytes_per_load],
+                            zmm_reg);
+                }
+            }
         }
-        
-        add(reg_i, unroll_factor * sizeof(uint64_t)); // reg_i 增加 4 * 8 = 32 bytes (64 / 4 * 4 * 8 / 16)
-        jmp("i_loop_start");
-    L("i_loop_end");
 
         // 5. 恢复寄存器
-        pop(r12); pop(r11); pop(r10); pop(r9); pop(r8);
-        pop(rcx); pop(rax); pop(r15); pop(r14); pop(r13);
+        pop(r12);
+        pop(r11);
+        pop(r10);
+        pop(r9);
+        pop(r8);
+        pop(rcx);
+        pop(rax);
+        pop(r15);
+        pop(r14);
+        pop(r13);
         
         ret();
-    }
-
-public:
-    SparseDecompressKernel()
-        // CodeGenerator 构造函数: (Code Size, JIT mode)
-        : Xbyak::CodeGenerator(4096, 0) 
-    {
-        // 检查 CPU feature 是否支持 AVX512 (简化检查)
-        if (!m_cpu.has(Xbyak::util::Cpu::tAVX512F)) {
-            throw std::runtime_error("AVX512 is not supported.");
-        }
-        
-        generate_code(); // 调用核心生成逻辑
-    }
-
-    // 获取 JIT 函数指针
-    void (*get_jit_func() const)(call_params_t *) {
-        return reinterpret_cast<void (*)(call_params_t *)>(getCode());
     }
 };
 
@@ -183,13 +233,15 @@ void run_test() {
     std::cout << "--- 稀疏解压缩 JIT Kernel 测试 ---" << std::endl;
 
     // 1. 初始化 Kernel
-    SparseDecompressKernel kernel;
+    const int K_blk = 128;
+    SparseDecompressKernel kernel(K_blk);
     auto jit_func = kernel.get_jit_func();
 
     // 2. 设置参数
     const int B_BLK = kernel.b_blk_sz_; // 64
     const int BYTES_PER_ROW = 64; // ZMM load size (64 bytes)
     const int NUM_ROWS = B_BLK; // 64 行
+    const int nblks = kernel.nblks_to_decompress_;
     const int BITMASK_SIZE = NUM_ROWS * sizeof(uint64_t);
 
     // a. 稀疏位掩码 (64行，每行一个 uint64_t 掩码)
@@ -206,6 +258,11 @@ void run_test() {
     bitmask[2] = 0x0;
     bitmask[3] = 0xFFFFFFFFFFFFFFFF;
     bitmask[4] = 0x8000000000000000;
+    // 填充剩余行，以确保循环执行完整
+    for (int i = 5; i < NUM_ROWS; ++i) {
+         if (i % 2 == 0) bitmask[i] = 0x5555555555555555; // 32 活跃
+         else bitmask[i] = 0xAAAAAAAAAAAAAA; // 32 活跃
+    }
 
     // b. 压缩后的源数据 (Src)
     // 需要空间容纳所有 popcnt 值的和
@@ -221,7 +278,7 @@ void run_test() {
     }
 
     // c. 解压缩后的目标数据 (Dst) - 稀疏矩阵
-    const int DST_SIZE = NUM_ROWS * BYTES_PER_ROW; // 64 * 64 = 4096 字节
+    const int DST_SIZE = nblks * NUM_ROWS * BYTES_PER_ROW; // 64 * 64 = 4096 字节
     std::vector<uint8_t> dst_data(DST_SIZE, 0xCC); // 填充 CC 方便查看未写入的区域
 
     // d. JIT 参数结构体
