@@ -79,8 +79,13 @@ private:
     // 辅助函数：根据 Arch 返回对应的向量寄存器类型 (Ymm 或 Zmm)
     // 这里的 Vmm 是一个 helper，用于在 generate 中统一写法
     Xbyak::Operand vmm(int idx) {
-        if (arch == Arch::AVX512) return Xbyak::Zmm(idx);
-        return Xbyak::Ymm(idx);
+        if (arch == Arch::AVX512) {
+            return Xbyak::Zmm(idx);
+        } else if (arch == Arch::AVX2) {
+            return Xbyak::Ymm(idx);
+        } else {
+            assert("unsupported isa");
+        }
     }
 
     // 具体寄存器别名
@@ -122,26 +127,24 @@ private:
         // --- 加载常量 ---
         // 将指针地址放入 reg_tmp，然后广播加载
         mov(reg_tmp, (size_t)negative_zero);
+        // vmovups(vmm_sign_bit_mask(), ptr[reg_tmp]);
         if (arch == Arch::AVX512) {
             vmovups(Xbyak::Zmm(2), ptr[reg_tmp]); // vmm_sign_bit_mask
-        }
-        else {
+        } else {
             vmovups(Xbyak::Ymm(2), ptr[reg_tmp]);
         }
 
         mov(reg_tmp, (size_t)positive_one);
         if (arch == Arch::AVX512) {
             vmovups(Xbyak::Zmm(6), ptr[reg_tmp]); // vmm_one
-        }
-        else {
+        } else {
             vmovups(Xbyak::Ymm(6), ptr[reg_tmp]);
         }
 
         mov(reg_tmp, (size_t)int8_max_arr);
         if (arch == Arch::AVX512) {
             vmovups(Xbyak::Zmm(4), ptr[reg_tmp]); // vmm_int8_max
-        }
-        else {
+        } else {
             vmovups(Xbyak::Ymm(4), ptr[reg_tmp]);
         }
 
@@ -157,8 +160,7 @@ private:
             // 清零 vmm_max
             if (arch == Arch::AVX512) {
                 vpxord(Xbyak::Zmm(1), Xbyak::Zmm(1), Xbyak::Zmm(1));
-            }
-            else {
+            } else {
                 vpxor(Xbyak::Ymm(1), Xbyak::Ymm(1), Xbyak::Ymm(1));
             }
 
@@ -167,24 +169,21 @@ private:
                 // Load src
                 if (arch == Arch::AVX512) {
                     vmovups(Xbyak::Zmm(0), ptr[reg_src + icb * vec_size_ * src_dt_size]);
-                }
-                else {
+                } else {
                     vmovups(Xbyak::Ymm(0), ptr[reg_src + icb * vec_size_ * src_dt_size]);
                 }
 
                 // abs(src) = src & ~sign_mask (using vandnps)
                 if (arch == Arch::AVX512) {
                     vandnps(Xbyak::Zmm(0), Xbyak::Zmm(2), Xbyak::Zmm(0));
-                }
-                else {
+                } else {
                     vandnps(Xbyak::Ymm(0), Xbyak::Ymm(2), Xbyak::Ymm(0));
                 }
 
                 // max reduction
                 if (arch == Arch::AVX512) {
                     vmaxps(Xbyak::Zmm(1), Xbyak::Zmm(1), Xbyak::Zmm(0));
-                }
-                else {
+                } else {
                     vmaxps(Xbyak::Ymm(1), Xbyak::Ymm(1), Xbyak::Ymm(0));
                 }
             }
@@ -224,24 +223,21 @@ private:
             // vbroadcastss vmm_dscale(1), xmm_dscale(1)
             if (arch == Arch::AVX512) {
                 vbroadcastss(Xbyak::Zmm(1), Xbyak::Xmm(1));
-            }
-            else {
+            } else {
                 vbroadcastss(Xbyak::Ymm(1), Xbyak::Xmm(1));
             }
 
             // div by 127
             if (arch == Arch::AVX512) {
                 vdivps(Xbyak::Zmm(1), Xbyak::Zmm(1), Xbyak::Zmm(4)); // vmm_int8_max
-            }
-            else {
+            } else {
                 vdivps(Xbyak::Ymm(1), Xbyak::Ymm(1), Xbyak::Ymm(4));
             }
 
             // qscale = 1.0 / dscale. result in vmm_qscale(5)
             if (arch == Arch::AVX512) {
                 vdivps(Xbyak::Zmm(5), Xbyak::Zmm(6), Xbyak::Zmm(1)); // one / dscale
-            }
-            else {
+            } else {
                 vdivps(Xbyak::Ymm(5), Xbyak::Ymm(6), Xbyak::Ymm(1));
             }
 
@@ -253,24 +249,21 @@ private:
                 // Load src
                 if (arch == Arch::AVX512) {
                     vmovups(Xbyak::Zmm(0), ptr[reg_src + icb * vec_size_ * src_dt_size]);
-                }
-                else {
+                } else {
                     vmovups(Xbyak::Ymm(0), ptr[reg_src + icb * vec_size_ * src_dt_size]);
                 }
 
                 // mul qscale
                 if (arch == Arch::AVX512) {
                     vmulps(Xbyak::Zmm(0), Xbyak::Zmm(0), Xbyak::Zmm(5));
-                }
-                else {
+                } else {
                     vmulps(Xbyak::Ymm(0), Xbyak::Ymm(0), Xbyak::Ymm(5));
                 }
 
                 // cvt to int32 (vcvtps2dq)
                 if (arch == Arch::AVX512) {
                     vcvtps2dq(Xbyak::Zmm(0), Xbyak::Zmm(0));
-                }
-                else {
+                } else {
                     vcvtps2dq(Xbyak::Ymm(0), Xbyak::Ymm(0));
                 }
 
@@ -411,7 +404,7 @@ int main() {
     // 初始化参数
     // 假设 Block Size = 32 (需要是 vec_size 的倍数)
     // AVX2 vec_size = 8, AVX512 vec_size = 16
-    size_t ic_quant_block = 32; 
+    size_t ic_quant_block = 32; // 每ic_quant_block share一个scale
     size_t data_size = 64; // 总数据量
 
     src_quantization_compile_params_t jcp = { ic_quant_block };
