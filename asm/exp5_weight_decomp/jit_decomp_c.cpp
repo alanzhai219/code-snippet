@@ -210,6 +210,21 @@ void decompress_avx512(uint8_t* decomp_buf,
     }
 }
 
+void gen_origin_data(std::vector<uint8_t> original_uncompressed_data,
+                     const size_t output_size) {
+    std::cout << "Step 1: Original uncompressed sparse data created (Random)." << std::endl;
+    // 使用随机数据填充，模拟稀疏性
+    srand(42);
+    for (size_t i = 0; i < output_size; ++i) {
+        // 70% 概率为 0
+        if (rand() % 10 < 7) {
+            original_uncompressed_data[i] = 0;
+        } else {
+            original_uncompressed_data[i] = (uint8_t)((rand() % 255) + 1);
+        }
+    }
+}
+
 // =================================================================
 // ---- 新增的压缩函数 ----
 // 这个函数接收未压缩的稀疏数据，并在压缩过程中生成掩码和压缩后的数据流
@@ -241,7 +256,7 @@ void compress_weights(
         }
 
         // --- 缓存行对齐逻辑 (与内核中镜像) ---
-        // 在每个块的末尾，添加填充以模拟指针推进
+        // 在compressed data每个block的末尾，添加填充以模拟指针推进
         size_t current_size = compressed_output.size();
         size_t misalignment = current_size & 0x3F;
         if (misalignment != 0) {
@@ -254,6 +269,7 @@ void compress_weights(
     
     // 确保末尾有足够的填充，以防越界读取
     compressed_output.resize(compressed_output.size() + 128, 0xDD);
+    std::cout << "Step 2: Compression logic executed." << std::endl;
 }
 
 // -----------------------------------------------------------------
@@ -271,9 +287,6 @@ int main() {
     std::cout << "Total output size: " << (output_size / 1024.0 / 1024.0) << " MB" << std::endl;
 
     // --- 2. 分配缓冲区 ---
-    std::vector<uint64_t> bitmask(total_chunks);
-    std::vector<uint8_t> original_uncompressed_data(output_size, 0);
-    std::vector<uint8_t> compressed_data;
 
     // 64 字节对齐输出缓冲区
     uint8_t* output_scalar_nounroll = (uint8_t*)aligned_alloc(64, output_size);
@@ -289,25 +302,16 @@ int main() {
     // =================================================================
     // ---- 第 1 步: 构建原始非压缩数据 ----
     // =================================================================
-    // 使用随机数据填充，模拟稀疏性
-    srand(42);
-    for (size_t i = 0; i < output_size; ++i) {
-        // 70% 概率为 0
-        if (rand() % 10 < 4) {
-            original_uncompressed_data[i] = 0;
-        } else {
-            original_uncompressed_data[i] = (uint8_t)((rand() % 255) + 1);
-        }
-    }
-    std::cout << "Step 1: Original uncompressed sparse data created (Random)." << std::endl;
+    std::vector<uint8_t> original_uncompressed_data(output_size, 0);
+    gen_origin_data(original_uncompressed_data, output_size);
 
     // =================================================================
     // ---- 第 2 步: 实现压缩逻辑 (同时生成掩码) ----
     // =================================================================
+    std::vector<uint8_t> compressed_data;
+    std::vector<uint64_t> bitmask(total_chunks);
     compress_weights(compressed_data, bitmask, original_uncompressed_data, num_blocks, chunks_per_block);
-    std::cout << "Step 2: Compression logic executed." << std::endl;
-    std::cout << "Compressed size (with padding): " 
-              << (compressed_data.size() / 1024.0 / 1024.0) << " MB (70% sparsity)" << std::endl;
+    std::cout << "Compressed size (with padding): " << (compressed_data.size() / 1024.0 / 1024.0) << " MB (70% sparsity)" << std::endl;
     
     // =================================================================
     // ---- 第 3 步: 运行基准测试和验证 ----
