@@ -7,208 +7,9 @@
 #include <cstdlib>  // aligned_alloc, free
 #include <iomanip>  // 用于 std::setw, std::fixed, std::hex, std::setfill
 
-// AVX-512 和 POPCNT 的头文件
-#include <immintrin.h>
-#include <nmmintrin.h> // for _mm_popcnt_u64
-
-// -----------------------------------------------------------------
-// ---- 1. 纯 C++ (标量) 实现 - 不展开 ----
-// -----------------------------------------------------------------
-void decompress_scalar_nounroll(uint8_t* decomp_buf,
-                                const uint8_t* compressed_buf,
-                                const uint64_t* bitmask_ptr,
-                                int blocks) {
-    const uint8_t* current_src_ptr = compressed_buf;
-    const int chunks_per_block = 64;
-    const int bytes_per_chunk = 64;
-
-    for (int block = 0; block < blocks; ++block) {
-        size_t wei_offset = (size_t)block * 4096;
-        const uint64_t* current_block_mask_ptr = bitmask_ptr + (block * chunks_per_block);
-
-        for (int cl = 0; cl < chunks_per_block; cl++) {
-            uint64_t mask1 = current_block_mask_ptr[cl];
-            uint8_t* dst1 = decomp_buf + wei_offset + bytes_per_chunk * cl;
-            size_t popcnt1 = 0;
-            for (int i = 0; i < bytes_per_chunk; ++i) {
-                if ((mask1 >> i) & 1) {
-                    dst1[i] = current_src_ptr[popcnt1++];
-                } else {
-                    dst1[i] = 0;
-                }
-            }
-            current_src_ptr += popcnt1;
-        }
-
-        // --- 缓存行对齐逻辑 (不变) ---
-        size_t offset = (size_t)current_src_ptr;
-        size_t misalignment = offset & 0x3F;
-        if (misalignment != 0) {
-            current_src_ptr += (64 - misalignment);
-        }
-    }
-}
-
-// -----------------------------------------------------------------
-// ---- 2. 纯 C++ (标量) 实现 - 4x 展开 ----
-// -----------------------------------------------------------------
-void decompress_scalar(uint8_t* decomp_buf,
-                       const uint8_t* compressed_buf,
-                       const uint64_t* bitmask_ptr,
-                       int blocks) {
-    const uint8_t* current_src_ptr = compressed_buf;
-    const int chunks_per_block = 64;
-
-    for (int block = 0; block < blocks; ++block) {
-        size_t wei_offset = (size_t)block * 4096;
-        const uint64_t* current_mask_ptr = bitmask_ptr + (block * chunks_per_block);
-
-        for (int cl = 0; cl < chunks_per_block; cl += 4) {
-            // --- Unroll 1 ---
-            uint64_t mask1 = current_mask_ptr[cl + 0];
-            uint8_t* dst1 = decomp_buf + wei_offset + (cl + 0) * 64;
-            size_t popcnt1 = 0;
-            for (int i = 0; i < 64; ++i) {
-                if ((mask1 >> i) & 1) {
-                    dst1[i] = current_src_ptr[popcnt1++];
-                } else {
-                    dst1[i] = 0;
-                }
-            }
-            current_src_ptr += popcnt1;
-
-            // --- Unroll 2 ---
-            uint64_t mask2 = current_mask_ptr[cl + 1];
-            uint8_t* dst2 = decomp_buf + wei_offset + (cl + 1) * 64;
-            size_t popcnt2 = 0;
-            for (int i = 0; i < 64; ++i) {
-                if ((mask2 >> i) & 1) {
-                    dst2[i] = current_src_ptr[popcnt2++];
-                } else {
-                    dst2[i] = 0;
-                }
-            }
-            current_src_ptr += popcnt2;
-            
-            // --- Unroll 3 ---
-            uint64_t mask3 = current_mask_ptr[cl + 2];
-            uint8_t* dst3 = decomp_buf + wei_offset + (cl + 2) * 64;
-            size_t popcnt3 = 0;
-            for (int i = 0; i < 64; ++i) {
-                if ((mask3 >> i) & 1) {
-                    dst3[i] = current_src_ptr[popcnt3++];
-                } else {
-                    dst3[i] = 0;
-                }
-            }
-            current_src_ptr += popcnt3;
-
-            // --- Unroll 4 ---
-            uint64_t mask4 = current_mask_ptr[cl + 3];
-            uint8_t* dst4 = decomp_buf + wei_offset + (cl + 3) * 64;
-            size_t popcnt4 = 0;
-            for (int i = 0; i < 64; ++i) {
-                if ((mask4 >> i) & 1) {
-                    dst4[i] = current_src_ptr[popcnt4++];
-                } else {
-                    dst4[i] = 0;
-                }
-            }
-            current_src_ptr += popcnt4;
-        }
-
-        // --- 缓存行对齐逻辑 (不变) ---
-        size_t offset = (size_t)current_src_ptr;
-        size_t misalignment = offset & 0x3F;
-        if (misalignment != 0) {
-            current_src_ptr += (64 - misalignment);
-        }
-    }
-}
-
-// -----------------------------------------------------------------
-// ---- 3. AVX-512 Intrinsics 实现 - 不展开 ----
-// -----------------------------------------------------------------
-void decompress_avx512_nounroll(uint8_t* decomp_buf,
-                                const uint8_t* compressed_buf,
-                                const uint64_t* bitmask_ptr,
-                                int blocks) {
-    const uint8_t* current_src_ptr = compressed_buf;
-    const int chunks_per_block = 64;
-
-    for (int block = 0; block < blocks; ++block) {
-        size_t wei_offset = (size_t)block * 4096;
-        const uint64_t* current_mask_ptr = bitmask_ptr + (block * chunks_per_block);
-
-        for (int cl = 0; cl < chunks_per_block; cl++) {
-            uint64_t mask1_u64 = current_mask_ptr[cl];
-            __mmask64 mask1 = mask1_u64;
-            __m512i zmm1 = _mm512_maskz_expandloadu_epi8(mask1, current_src_ptr);
-            _mm512_storeu_si512((__m512i*)(decomp_buf + wei_offset + cl * 64), zmm1);
-            current_src_ptr += _mm_popcnt_u64(mask1_u64);
-        }
-
-        // --- 缓存行对齐逻辑 (不变) ---
-        size_t offset = (size_t)current_src_ptr;
-        size_t misalignment = offset & 0x3F;
-        if (misalignment != 0) {
-            current_src_ptr += (64 - misalignment);
-        }
-    }
-}
-
-// -----------------------------------------------------------------
-// ---- 4. AVX-512 Intrinsics 实现 - 4x 展开 ----
-// -----------------------------------------------------------------
-void decompress_avx512(uint8_t* decomp_buf,
-                       const uint8_t* compressed_buf,
-                       const uint64_t* bitmask_ptr,
-                       int blocks) {
-    const uint8_t* current_src_ptr = compressed_buf;
-    const int chunks_per_block = 64;
-
-    for (int block = 0; block < blocks; ++block) {
-        size_t wei_offset = (size_t)block * 4096;
-        const uint64_t* current_mask_ptr = bitmask_ptr + (block * chunks_per_block);
-
-        for (int cl = 0; cl < chunks_per_block; cl += 4) {
-            // --- Unroll 1 ---
-            uint64_t mask1_u64 = current_mask_ptr[cl + 0];
-            __mmask64 mask1 = mask1_u64;
-            __m512i zmm1 = _mm512_maskz_expandloadu_epi8(mask1, current_src_ptr);
-            _mm512_storeu_si512((__m512i*)(decomp_buf + wei_offset + (cl + 0) * 64), zmm1);
-            current_src_ptr += _mm_popcnt_u64(mask1_u64);
-
-            // --- Unroll 2 ---
-            uint64_t mask2_u64 = current_mask_ptr[cl + 1];
-            __mmask64 mask2 = mask2_u64;
-            __m512i zmm2 = _mm512_maskz_expandloadu_epi8(mask2, current_src_ptr);
-            _mm512_storeu_si512((__m512i*)(decomp_buf + wei_offset + (cl + 1) * 64), zmm2);
-            current_src_ptr += _mm_popcnt_u64(mask2_u64);
-
-            // --- Unroll 3 ---
-            uint64_t mask3_u64 = current_mask_ptr[cl + 2];
-            __mmask64 mask3 = mask3_u64;
-            __m512i zmm3 = _mm512_maskz_expandloadu_epi8(mask3, current_src_ptr);
-            _mm512_storeu_si512((__m512i*)(decomp_buf + wei_offset + (cl + 2) * 64), zmm3);
-            current_src_ptr += _mm_popcnt_u64(mask3_u64);
-
-            // --- Unroll 4 ---
-            uint64_t mask4_u64 = current_mask_ptr[cl + 3];
-            __mmask64 mask4 = mask4_u64;
-            __m512i zmm4 = _mm512_maskz_expandloadu_epi8(mask4, current_src_ptr);
-            _mm512_storeu_si512((__m512i*)(decomp_buf + wei_offset + (cl + 3) * 64), zmm4);
-            current_src_ptr += _mm_popcnt_u64(mask4_u64);
-        }
-
-        // --- 缓存行对齐逻辑 (不变) ---
-        size_t offset = (size_t)current_src_ptr;
-        size_t misalignment = offset & 0x3F;
-        if (misalignment != 0) {
-            current_src_ptr += (64 - misalignment);
-        }
-    }
-}
+#include "decomp_kernel_ref.hpp"
+#include "decomp_kernel_jit.hpp"
+#include "decomp_kernel_avx512.hpp"
 
 void gen_origin_data(std::vector<uint8_t> original_uncompressed_data,
                      const size_t output_size) {
@@ -236,7 +37,7 @@ void compress_weights(
     int num_blocks,
     int chunks_per_block) {
     
-    compressed_output.clear();
+    compressed_output.clear(); // data size is aligned with 64B instead of address.
     bitmask_output.resize(num_blocks * chunks_per_block);
 
     for (int block = 0; block < num_blocks; ++block) {
@@ -293,6 +94,7 @@ int main() {
     uint8_t* output_scalar_unroll = (uint8_t*)aligned_alloc(64, output_size);
     uint8_t* output_avx512_nounroll = (uint8_t*)aligned_alloc(64, output_size);
     uint8_t* output_avx512_unroll = (uint8_t*)aligned_alloc(64, output_size);
+    uint8_t* output_jit_avx512_unroll = (uint8_t*)aligned_alloc(64, output_size);
 
     if (!output_scalar_nounroll || !output_scalar_unroll || !output_avx512_nounroll || !output_avx512_unroll) {
         std::cerr << "Failed to allocate aligned memory" << std::endl;
@@ -367,6 +169,27 @@ int main() {
         std::cout << "SUCCESS: AVX-512 (Unrolled) verified." << std::endl;
     }
 
+    // --- JIT AVX-512 (4x 展开) ---
+    memset(output_avx512_unroll, 0, output_size);
+    jit_decompress_kernel_t kernel(num_blocks);
+    auto* generated_jit_avx512_unroll_func = kernel.getCode<void (*)(jit_decomp_params_t*)>();
+    kernel.ready();
+
+    jit_decomp_params_t args;
+    args.compressed_buf = compressed_data.data();
+    args.bitmask_ptr = bitmask.data();
+    args.decomp_buf = (void*)output_jit_avx512_unroll;
+
+    auto start_jit_unroll = std::chrono::high_resolution_clock::now();
+    generated_jit_avx512_unroll_func(&args);
+    auto end_jit_unroll = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> time_jit_unroll = end_jit_unroll - start_jit_unroll;
+    if (memcmp(output_avx512_unroll, original_uncompressed_data.data(), output_size) != 0) {
+        std::cerr << "FAILURE: AVX-512 (Unrolled) verification failed!" << std::endl;
+    } else {
+        std::cout << "SUCCESS: AVX-512 (Unrolled) verified." << std::endl;
+    }
+
     // --- 4. 打印结果 ---
     std::cout << "\n--- Performance Results ---" << std::endl;
     std::cout << std::fixed << std::setprecision(3);
@@ -384,9 +207,13 @@ int main() {
               << std::setw(10) << std::right << time_avx_nounroll.count() << " ms\t"
               << "(" << (time_s_nounroll.count() / time_avx_nounroll.count()) << "x vs Scalar-NoUnroll)" << std::endl;
               
-    std::cout << std::setw(w) << std::left << "AVX-512 (4x Unroll, JIT)" << ": " 
+    std::cout << std::setw(w) << std::left << "AVX-512 (4x Unroll)" << ": " 
               << std::setw(10) << std::right << time_avx_unroll.count() << " ms\t"
               << "(" << (time_s_nounroll.count() / time_avx_unroll.count()) << "x vs Scalar-NoUnroll)" << std::endl;
+
+    std::cout << std::setw(w) << std::left << "JIT-AVX-512 (4x Unroll, JIT)" << ": " 
+              << std::setw(10) << std::right << time_jit_unroll.count() << " ms\t"
+              << "(" << (time_s_nounroll.count() / time_jit_unroll.count()) << "x vs Scalar-NoUnroll)" << std::endl;
 
     std::cout << "\n--- Key Speedups ---" << std::endl;
     std::cout << "SIMD (AVX-512) Speedup: " << (time_s_nounroll.count() / time_avx_nounroll.count()) << "x" << std::endl;
@@ -413,6 +240,7 @@ int main() {
     free(output_scalar_unroll);
     free(output_avx512_nounroll);
     free(output_avx512_unroll);
+    free(output_jit_avx512_unroll);
 
     return 0;
 }
