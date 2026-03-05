@@ -10,8 +10,11 @@
 #include "decomp_kernel_ref.hpp"
 #include "decomp_kernel_jit.hpp"
 #include "decomp_kernel_avx512.hpp"
+#include "decomp_kernel_ref_opt.hpp"
+#include "decomp_kernel_avx512_opt.hpp"
+#include "decomp_kernel_jit_opt.hpp"
 
-void gen_origin_data(std::vector<uint8_t> original_uncompressed_data,
+void gen_origin_data(std::vector<uint8_t>& original_uncompressed_data,
                      const size_t output_size) {
     std::cout << "Step 1: Original uncompressed sparse data created (Random)." << std::endl;
     // 使用随机数据填充，模拟稀疏性
@@ -83,20 +86,23 @@ int main() {
     const int chunks_per_block = 64;
     const int total_chunks = num_blocks * chunks_per_block;
     const size_t output_size = (size_t)num_blocks * elts_per_block;
+    const int num_runs = 10; // 多次运行取平均
 
-    std::cout << "--- AVX-512 Decompression Benchmark (Refactored) ---" << std::endl;
+    std::cout << "--- AVX-512 Decompression Benchmark ---" << std::endl;
     std::cout << "Total output size: " << (output_size / 1024.0 / 1024.0) << " MB" << std::endl;
+    std::cout << "Num runs per kernel: " << num_runs << std::endl;
 
     // --- 2. 分配缓冲区 ---
-
-    // 64 字节对齐输出缓冲区
     uint8_t* output_scalar_nounroll = (uint8_t*)aligned_alloc(64, output_size);
     uint8_t* output_scalar_unroll = (uint8_t*)aligned_alloc(64, output_size);
     uint8_t* output_avx512_nounroll = (uint8_t*)aligned_alloc(64, output_size);
     uint8_t* output_avx512_unroll = (uint8_t*)aligned_alloc(64, output_size);
-    uint8_t* output_jit_avx512_unroll = (uint8_t*)aligned_alloc(64, output_size);
+    uint8_t* output_jit = (uint8_t*)aligned_alloc(64, output_size);
+    uint8_t* output_avx512_opt = (uint8_t*)aligned_alloc(64, output_size);
+    uint8_t* output_jit_opt = (uint8_t*)aligned_alloc(64, output_size);
 
-    if (!output_scalar_nounroll || !output_scalar_unroll || !output_avx512_nounroll || !output_avx512_unroll) {
+    if (!output_scalar_nounroll || !output_scalar_unroll || !output_avx512_nounroll ||
+        !output_avx512_unroll || !output_jit || !output_avx512_opt || !output_jit_opt) {
         std::cerr << "Failed to allocate aligned memory" << std::endl;
         return 1;
     }
@@ -114,133 +120,161 @@ int main() {
     std::vector<uint64_t> bitmask(total_chunks);
     compress_weights(compressed_data, bitmask, original_uncompressed_data, num_blocks, chunks_per_block);
     std::cout << "Compressed size (with padding): " << (compressed_data.size() / 1024.0 / 1024.0) << " MB (70% sparsity)" << std::endl;
-    
-    // =================================================================
-    // ---- 第 3 步: 运行基准测试和验证 ----
-    // (验证逻辑现在与 original_uncompressed_data 进行比较)
-    // =================================================================
-    std::cout << "\nRunning benchmarks..." << std::endl;
 
-    // --- 标量 (不展开) ---
+    // =================================================================
+    // ---- 第 3 步: 验证所有内核的正确性 (单次运行) ----
+    // =================================================================
+    std::cout << "\n--- Correctness Verification ---" << std::endl;
+
+    auto verify = [&](const char* name, uint8_t* buf) -> bool {
+        if (memcmp(buf, original_uncompressed_data.data(), output_size) != 0) {
+            std::cerr << "FAILURE: " << name << " verification failed!" << std::endl;
+            return false;
+        }
+        std::cout << "SUCCESS: " << name << " verified." << std::endl;
+        return true;
+    };
+
+    // Scalar (No Unroll)
     memset(output_scalar_nounroll, 0, output_size);
-    auto start_s_nounroll = std::chrono::high_resolution_clock::now();
     decompress_scalar_nounroll(output_scalar_nounroll, compressed_data.data(), bitmask.data(), num_blocks);
-    auto end_s_nounroll = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> time_s_nounroll = end_s_nounroll - start_s_nounroll;
-    if (memcmp(output_scalar_nounroll, original_uncompressed_data.data(), output_size) != 0) {
-        std::cerr << "FAILURE: Scalar (No Unroll) verification failed!" << std::endl;
-    } else {
-        std::cout << "SUCCESS: Scalar (No Unroll) verified." << std::endl;
-    }
+    verify("Scalar (No Unroll)", output_scalar_nounroll);
 
-    // --- 标量 (4x 展开) ---
+    // Scalar (4x Unroll)
     memset(output_scalar_unroll, 0, output_size);
-    auto start_s_unroll = std::chrono::high_resolution_clock::now();
     decompress_scalar(output_scalar_unroll, compressed_data.data(), bitmask.data(), num_blocks);
-    auto end_s_unroll = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> time_s_unroll = end_s_unroll - start_s_unroll;
-    if (memcmp(output_scalar_unroll, original_uncompressed_data.data(), output_size) != 0) {
-        std::cerr << "FAILURE: Scalar (Unrolled) verification failed!" << std::endl;
-    } else {
-        std::cout << "SUCCESS: Scalar (Unrolled) verified." << std::endl;
-    }
+    verify("Scalar (4x Unroll)", output_scalar_unroll);
 
-    // --- AVX-512 (不展开) ---
+    // AVX-512 (No Unroll)
     memset(output_avx512_nounroll, 0, output_size);
-    auto start_avx_nounroll = std::chrono::high_resolution_clock::now();
     decompress_avx512_nounroll(output_avx512_nounroll, compressed_data.data(), bitmask.data(), num_blocks);
-    auto end_avx_nounroll = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> time_avx_nounroll = end_avx_nounroll - start_avx_nounroll;
-    if (memcmp(output_avx512_nounroll, original_uncompressed_data.data(), output_size) != 0) {
-        std::cerr << "FAILURE: AVX-512 (No Unroll) verification failed!" << std::endl;
-    } else {
-        std::cout << "SUCCESS: AVX-512 (No Unroll) verified." << std::endl;
-    }
+    verify("AVX-512 (No Unroll)", output_avx512_nounroll);
 
-    // --- AVX-512 (4x 展开) ---
+    // AVX-512 (4x Unroll)
     memset(output_avx512_unroll, 0, output_size);
-    auto start_avx_unroll = std::chrono::high_resolution_clock::now();
     decompress_avx512(output_avx512_unroll, compressed_data.data(), bitmask.data(), num_blocks);
-    auto end_avx_unroll = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> time_avx_unroll = end_avx_unroll - start_avx_unroll;
-    if (memcmp(output_avx512_unroll, original_uncompressed_data.data(), output_size) != 0) {
-        std::cerr << "FAILURE: AVX-512 (Unrolled) verification failed!" << std::endl;
-    } else {
-        std::cout << "SUCCESS: AVX-512 (Unrolled) verified." << std::endl;
-    }
+    verify("AVX-512 (4x Unroll)", output_avx512_unroll);
 
-    // --- JIT AVX-512 (4x 展开) ---
-    memset(output_avx512_unroll, 0, output_size);
-    jit_decompress_kernel_t kernel(num_blocks);
-    auto* generated_jit_avx512_unroll_func = kernel.getCode<void (*)(jit_decomp_params_t*)>();
-    kernel.ready();
+    // AVX-512 Opt (4x Unroll)
+    memset(output_avx512_opt, 0, output_size);
+    decompress_avx512_opt(output_avx512_opt, compressed_data.data(), bitmask.data(), num_blocks);
+    verify("AVX-512 Opt (4x Unroll)", output_avx512_opt);
 
-    jit_decomp_params_t args;
-    args.compressed_buf = compressed_data.data();
-    args.bitmask_ptr = bitmask.data();
-    args.decomp_buf = (void*)output_jit_avx512_unroll;
+    // JIT (original)
+    memset(output_jit, 0, output_size);
+    jit_decompress_kernel_t kernel_orig(num_blocks);
+    auto* jit_func_orig = kernel_orig.getCode<void (*)(jit_decomp_params_t*)>();
+    kernel_orig.ready();
+    jit_decomp_params_t args_orig;
+    args_orig.compressed_buf = compressed_data.data();
+    args_orig.bitmask_ptr = bitmask.data();
+    args_orig.decomp_buf = (void*)output_jit;
+    jit_func_orig(&args_orig);
+    verify("JIT (original)", output_jit);
 
-    auto start_jit_unroll = std::chrono::high_resolution_clock::now();
-    generated_jit_avx512_unroll_func(&args);
-    auto end_jit_unroll = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> time_jit_unroll = end_jit_unroll - start_jit_unroll;
-    if (memcmp(output_avx512_unroll, original_uncompressed_data.data(), output_size) != 0) {
-        std::cerr << "FAILURE: AVX-512 (Unrolled) verification failed!" << std::endl;
-    } else {
-        std::cout << "SUCCESS: AVX-512 (Unrolled) verified." << std::endl;
-    }
+    // JIT Opt (prefix-sum)
+    memset(output_jit_opt, 0, output_size);
+    jit_decompress_kernel_t_opt kernel_opt(num_blocks);
+    auto* jit_func_opt = kernel_opt.getCode<void (*)(jit_decomp_params_t_opt*)>();
+    kernel_opt.ready();
+    jit_decomp_params_t_opt args_opt;
+    args_opt.compressed_buf = compressed_data.data();
+    args_opt.bitmask_ptr = bitmask.data();
+    args_opt.decomp_buf = (void*)output_jit_opt;
+    jit_func_opt(&args_opt);
+    verify("JIT Opt (prefix-sum)", output_jit_opt);
 
-    // --- 4. 打印结果 ---
-    std::cout << "\n--- Performance Results ---" << std::endl;
-    std::cout << std::fixed << std::setprecision(3);
-    const int w = 30;
-    
-    std::cout << std::setw(w) << std::left << "Scalar (No Unroll)" << ": " 
-              << std::setw(10) << std::right << time_s_nounroll.count() << " ms\t"
-              << "(Baseline, 1.00x)" << std::endl;
-              
-    std::cout << std::setw(w) << std::left << "Scalar (4x Unroll)" << ": " 
-              << std::setw(10) << std::right << time_s_unroll.count() << " ms\t"
-              << "(" << (time_s_nounroll.count() / time_s_unroll.count()) << "x vs Scalar-NoUnroll)" << std::endl;
+    // =================================================================
+    // ---- 第 4 步: 性能基准测试 (多次运行取平均) ----
+    // =================================================================
+    std::cout << "\n--- Running Performance Benchmarks (" << num_runs << " runs each) ---" << std::endl;
 
-    std::cout << std::setw(w) << std::left << "AVX-512 (No Unroll)" << ": " 
-              << std::setw(10) << std::right << time_avx_nounroll.count() << " ms\t"
-              << "(" << (time_s_nounroll.count() / time_avx_nounroll.count()) << "x vs Scalar-NoUnroll)" << std::endl;
-              
-    std::cout << std::setw(w) << std::left << "AVX-512 (4x Unroll)" << ": " 
-              << std::setw(10) << std::right << time_avx_unroll.count() << " ms\t"
-              << "(" << (time_s_nounroll.count() / time_avx_unroll.count()) << "x vs Scalar-NoUnroll)" << std::endl;
+    // Helper lambda for benchmarking
+    auto bench = [&](const char* name, auto func, int runs) -> double {
+        double total = 0;
+        for (int r = 0; r < runs; ++r) {
+            auto start = std::chrono::high_resolution_clock::now();
+            func();
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> elapsed = end - start;
+            total += elapsed.count();
+        }
+        return total / runs;
+    };
 
-    std::cout << std::setw(w) << std::left << "JIT-AVX-512 (4x Unroll, JIT)" << ": " 
-              << std::setw(10) << std::right << time_jit_unroll.count() << " ms\t"
-              << "(" << (time_s_nounroll.count() / time_jit_unroll.count()) << "x vs Scalar-NoUnroll)" << std::endl;
+    double time_s_nounroll = bench("Scalar (No Unroll)", [&]() {
+        decompress_scalar_nounroll(output_scalar_nounroll, compressed_data.data(), bitmask.data(), num_blocks);
+    }, num_runs);
 
-    std::cout << "\n--- Key Speedups ---" << std::endl;
-    std::cout << "SIMD (AVX-512) Speedup: " << (time_s_nounroll.count() / time_avx_nounroll.count()) << "x" << std::endl;
-    std::cout << "Unrolling Speedup (AVX-512): " << (time_avx_nounroll.count() / time_avx_unroll.count()) << "x" << std::endl;
+    double time_s_unroll = bench("Scalar (4x Unroll)", [&]() {
+        decompress_scalar(output_scalar_unroll, compressed_data.data(), bitmask.data(), num_blocks);
+    }, num_runs);
 
-    // --- 5. 打印前 10 个值 ---
+    double time_avx_nounroll = bench("AVX-512 (No Unroll)", [&]() {
+        decompress_avx512_nounroll(output_avx512_nounroll, compressed_data.data(), bitmask.data(), num_blocks);
+    }, num_runs);
+
+    double time_avx_unroll = bench("AVX-512 (4x Unroll)", [&]() {
+        decompress_avx512(output_avx512_unroll, compressed_data.data(), bitmask.data(), num_blocks);
+    }, num_runs);
+
+    double time_avx_opt = bench("AVX-512 Opt (4x Unroll)", [&]() {
+        decompress_avx512_opt(output_avx512_opt, compressed_data.data(), bitmask.data(), num_blocks);
+    }, num_runs);
+
+    double time_jit_orig = bench("JIT (original)", [&]() {
+        jit_func_orig(&args_orig);
+    }, num_runs);
+
+    double time_jit_opt = bench("JIT Opt (prefix-sum)", [&]() {
+        jit_func_opt(&args_opt);
+    }, num_runs);
+
+    // --- 打印结果 ---
+    std::cout << "\n--- Performance Results (avg over " << num_runs << " runs) ---" << std::endl;
+    std::cout << std::fixed << std::setprecision(4);
+    const int w = 35;
+
+    auto print_row = [&](const char* name, double time_ms, double baseline_ms) {
+        std::cout << std::setw(w) << std::left << name << ": "
+                  << std::setw(10) << std::right << time_ms << " ms"
+                  << "  (" << std::setprecision(2) << (baseline_ms / time_ms) << "x vs baseline)"
+                  << std::setprecision(4) << std::endl;
+    };
+
+    print_row("Scalar (No Unroll) [baseline]", time_s_nounroll, time_s_nounroll);
+    print_row("Scalar (4x Unroll)", time_s_unroll, time_s_nounroll);
+    print_row("AVX-512 (No Unroll)", time_avx_nounroll, time_s_nounroll);
+    print_row("AVX-512 (4x Unroll)", time_avx_unroll, time_s_nounroll);
+    print_row("AVX-512 Opt (4x Unroll)", time_avx_opt, time_s_nounroll);
+    print_row("JIT (original, 4x Unroll)", time_jit_orig, time_s_nounroll);
+    print_row("JIT Opt (prefix-sum, 4x Unroll)", time_jit_opt, time_s_nounroll);
+
+    std::cout << "\n--- JIT vs AVX-512 Comparison ---" << std::endl;
+    std::cout << "AVX-512 Opt (4x Unroll):             " << time_avx_opt << " ms" << std::endl;
+    std::cout << "JIT Opt (prefix-sum, 4x Unroll):     " << time_jit_opt << " ms" << std::endl;
+    double gap_pct = (time_jit_opt - time_avx_opt) / time_avx_opt * 100.0;
+    std::cout << "JIT vs AVX-512 gap:                  " << (gap_pct > 0 ? "+" : "") << gap_pct << "%" << std::endl;
+    std::cout << "JIT Opt vs JIT Original speedup:     " << (time_jit_orig / time_jit_opt) << "x" << std::endl;
+
+    // --- 前 10 个值比较 ---
     std::cout << "\n--- Value Comparison (First 10 Bytes) ---" << std::endl;
-    std::cout << std::hex << std::setfill('0'); // 切换到十六进制打印
-    
+    std::cout << std::hex << std::setfill('0');
     std::cout << std::setw(w) << std::left << "Original Data" << ": ";
-    for (int i = 0; i < 10; ++i) {
-        std::cout << "0x" << std::setw(2) << (int)original_uncompressed_data[i] << " ";
-    }
+    for (int i = 0; i < 10; ++i) std::cout << "0x" << std::setw(2) << (int)original_uncompressed_data[i] << " ";
     std::cout << std::endl;
-    
-    std::cout << std::setw(w) << std::left << "Decompressed (AVX-512 Unrolled)" << ": ";
-    for (int i = 0; i < 10; ++i) {
-        std::cout << "0x" << std::setw(2) << (int)output_avx512_unroll[i] << " ";
-    }
-    std::cout << std::endl << std::dec; // 切换回十进制
+    std::cout << std::setw(w) << std::left << "JIT Opt Output" << ": ";
+    for (int i = 0; i < 10; ++i) std::cout << "0x" << std::setw(2) << (int)output_jit_opt[i] << " ";
+    std::cout << std::endl << std::dec;
 
     // 释放内存
     free(output_scalar_nounroll);
     free(output_scalar_unroll);
     free(output_avx512_nounroll);
     free(output_avx512_unroll);
-    free(output_jit_avx512_unroll);
+    free(output_jit);
+    free(output_avx512_opt);
+    free(output_jit_opt);
 
     return 0;
 }
