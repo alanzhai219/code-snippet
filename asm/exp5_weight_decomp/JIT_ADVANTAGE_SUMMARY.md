@@ -133,6 +133,78 @@ The JIT compilation cost (~μs) is **amortized over millions of inference calls*
 
 ---
 
+## JIT Compilation Overhead Analysis
+
+### The Problem: Unknown Masks Require Recompilation
+
+The benchmark above excludes JIT compilation time from measurement — the kernel is compiled before the timing loop. In real scenarios where masks are **not known in advance**, each new mask pattern requires re-instantiating `jit_decompress_specialized_t`, and the compilation cost becomes non-trivial.
+
+### Compilation Cost Breakdown
+
+| Operation | Source | Typical Cost |
+|-----------|--------|-------------|
+| `mmap` (allocate executable memory) | Xbyak constructor `CodeGenerator(4096*256)` = 1MB | 2–10 μs |
+| Code generation loop | Iterate `blocks × 64` chunks, emit 2–4 x86 instructions each | Proportional to size |
+| `mprotect` (W→X) | `ready()` call | 1–5 μs |
+| `munmap` (destructor) | Free memory | 2–10 μs |
+
+Each Xbyak instruction emission involves encoding the x86 instruction (table lookup + bit manipulation) and writing a few bytes to the buffer, costing approximately **20–100 ns** per instruction (pure userspace, no syscalls).
+
+### Estimation Formula
+
+$$T_{compile} = T_{mmap} + T_{mprotect} + N_{chunks} \times C_{avg\_insns} \times T_{per\_insn}$$
+
+With typical values:
+
+$$T_{compile} \approx 5\mu s + 3\mu s + (blocks \times 64) \times 3 \times 50ns$$
+
+| blocks | chunks | Code generation | Syscalls | **Total compile time** |
+|--------|--------|----------------|----------|----------------------|
+| 1 | 64 | ~10 μs | ~8 μs | **~18 μs** |
+| 4 | 256 | ~38 μs | ~8 μs | **~46 μs** |
+| 16 | 1024 | ~154 μs | ~8 μs | **~162 μs** |
+| 64 | 4096 | ~614 μs | ~8 μs | **~622 μs** |
+
+### Break-Even Point
+
+If the specialized JIT saves $\Delta t$ μs per call vs the generic JIT, it needs $N$ calls to pay back compilation:
+
+$$N_{break\_even} = \frac{T_{compile}}{\Delta t}$$
+
+For the 4-block benchmark scenario, assuming ~0.2 μs/call savings:
+
+$$N_{break\_even} = \frac{46\mu s}{0.2\mu s} \approx 230 \text{ calls}$$
+
+> **The same mask pattern must be invoked ~230 times before the specialized JIT breaks even.**
+
+Note: The benchmark code now includes compilation time measurement and break-even calculation (see the "JIT Compile Cost Amortization" output section in `run_scenario`).
+
+### When Compilation Cost Is Negligible (LLM Inference)
+
+In autoregressive LLM generation, each token requires decompressing the same weight tensors:
+
+- 1000-token generation × 32-layer model = **32,000 calls per mask pattern**
+- Compilation cost (~46 μs) is amortized over 32,000 invocations → **~0.001 μs per call**
+
+### When Compilation Cost Dominates
+
+| Scenario | Why | Recommended Kernel |
+|----------|-----|-------------------|
+| Dynamic sparsity (activation masks) | Mask changes every forward pass | JIT Generic |
+| One-shot decompression | Decompress once, use dense result | AVX-512 Intrinsics |
+| Many distinct weight shapes | Each mask needs its own kernel, I-cache pressure | JIT Generic + kernel caching |
+
+### Practical Mitigation Strategies
+
+| Strategy | Approach |
+|----------|----------|
+| **Kernel caching** | Hash the mask array, cache compiled kernels in an LRU map. Same mask → reuse function pointer |
+| **Async compilation** | Use generic JIT for the first call; compile specialized kernel on a background thread; atomically swap function pointer when ready |
+| **Tiered compilation (HotSpot-style)** | Count invocations per mask pattern; only JIT-specialize after a threshold |
+| **Reduce compilation overhead** | Use smaller Xbyak code buffer; pool/reuse `CodeGenerator` objects to avoid repeated `mmap`/`munmap` |
+
+---
+
 ## Key Takeaway
 
 > **JIT's true power is not matching compiler output — it's doing what compilers fundamentally cannot**: specializing code based on runtime data.

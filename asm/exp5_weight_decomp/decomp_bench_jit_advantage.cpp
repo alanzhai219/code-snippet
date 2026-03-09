@@ -30,6 +30,7 @@
 
 #include "decomp_kernel_avx512_opt.hpp"
 #include "decomp_kernel_jit_opt.hpp"
+#include "decomp_kernel_jit_opt_specialized.hpp"
 
 // =================================================================
 // Utility functions
@@ -147,9 +148,12 @@ void run_scenario(const char* scenario_name,
     // --- Create kernels ---
     // 1. AVX-512 intrinsics (generic, compiled code)
     // 2. JIT generic (prefix-sum, runtime popcnt)
+    auto t_jit_generic_compile_start = std::chrono::high_resolution_clock::now();
     jit_decompress_kernel_t_opt jit_gen(num_blocks);
     auto* jit_gen_func = jit_gen.getCode<void (*)(jit_decomp_params_t_opt*)>();
     jit_gen.ready();
+    auto t_jit_generic_compile_end = std::chrono::high_resolution_clock::now();
+    double jit_generic_compile_time_us = std::chrono::duration<double, std::micro>(t_jit_generic_compile_end - t_jit_generic_compile_start).count();
 
     jit_decomp_params_t_opt gen_args;
     gen_args.compressed_buf = compressed.data();
@@ -157,9 +161,13 @@ void run_scenario(const char* scenario_name,
     gen_args.decomp_buf = out_jit_gen;
 
     // 3. JIT specialized (mask-aware, all offsets pre-computed)
+    //    Measure JIT compilation time to assess amortization cost
+    auto t_compile_start = std::chrono::high_resolution_clock::now();
     jit_decompress_specialized_t jit_spec(num_blocks, bitmask.data());
     auto* jit_spec_func = jit_spec.getCode<void (*)(jit_specialized_params_t*)>();
     jit_spec.ready();
+    auto t_compile_end = std::chrono::high_resolution_clock::now();
+    double compile_time_us = std::chrono::duration<double, std::micro>(t_compile_end - t_compile_start).count();
 
     jit_specialized_params_t spec_args;
     spec_args.compressed_buf = compressed.data();
@@ -178,6 +186,10 @@ void run_scenario(const char* scenario_name,
               << " (" << std::setprecision(1) << (100.0 * jit_spec.partial_chunks_ / total_ch) << "%)"
               << "  → mov+kmovq+vpexpandb+store (4 insns)" << std::endl;
     std::cout << "    Generated code:    " << jit_spec.code_size_ << " bytes" << std::endl;
+    std::cout << "    JIT Generic compile time:  " << std::setprecision(1) << jit_generic_compile_time_us 
+              << " us (mmap + codegen + mprotect)" << std::endl;
+    std::cout << "    JIT compile time:  " << std::setprecision(1) << compile_time_us
+              << " us (mmap + codegen + mprotect)" << std::endl;
 
     // --- Correctness verification ---
     auto verify = [&](const char* name, uint8_t* buf) -> bool {
@@ -271,6 +283,29 @@ void run_scenario(const char* scenario_name,
               << (time_avx / time_jit_spec) << "x faster" << std::endl;
     std::cout << "    JIT Specialized vs JIT Generic:   "
               << (time_jit_gen / time_jit_spec) << "x faster" << std::endl;
+
+    // --- JIT Compile Cost Amortization Analysis ---
+    double delta_vs_generic = time_jit_gen - time_jit_spec;
+    double delta_vs_avx = time_avx - time_jit_spec;
+    std::cout << "\n  JIT Compile Cost Amortization:" << std::endl;
+    std::cout << std::setprecision(1);
+    std::cout << "    Compile time:                " << compile_time_us << " us" << std::endl;
+    std::cout << "    Per-call saving vs generic:  " << std::setprecision(3) << delta_vs_generic << " us" << std::endl;
+    std::cout << "    Per-call saving vs intrinsics: " << delta_vs_avx << " us" << std::endl;
+    if (delta_vs_generic > 0) {
+        double breakeven_gen = compile_time_us / delta_vs_generic;
+        std::cout << std::setprecision(0);
+        std::cout << "    Break-even vs generic:       " << breakeven_gen << " calls" << std::endl;
+    } else {
+        std::cout << "    Break-even vs generic:       N/A (no per-call gain)" << std::endl;
+    }
+    if (delta_vs_avx > 0) {
+        double breakeven_avx = compile_time_us / delta_vs_avx;
+        std::cout << std::setprecision(0);
+        std::cout << "    Break-even vs intrinsics:    " << breakeven_avx << " calls" << std::endl;
+    } else {
+        std::cout << "    Break-even vs intrinsics:    N/A (no per-call gain)" << std::endl;
+    }
 
     (void)sink;
     free(out_avx);
