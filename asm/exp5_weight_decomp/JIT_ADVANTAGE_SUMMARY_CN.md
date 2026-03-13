@@ -55,6 +55,19 @@ add  reg_m4,   reg_m3           ; total = p1 + p2 + p3 + p4
 - `popcnt` 延迟 3 周期，吞吐 1/周期。4 个独立 `popcnt` 可在 3+3=6 周期内全部完成（最后一个在第 6 周期就绪），而非串行的 4×3=12 周期。
 - 前缀和只需 3 次 `add`（各 1 周期），总共约 **6 周期**，相比 V1 的 16 周期改善了 **2.67×**。
 
+> Note:
+> - 延迟 (Latency = 3 周期)：
+指的是单个指令从“开始执行”到“结果可用”所需要的时间。
+如果你只执行 1 条 popcnt，它需要 3 个周期才能拿到结果。
+> - 吞吐 (Throughput = 1/周期)：
+指的是执行单元每隔多久可以接收一条新指令。
+吞吐为 1/周期，意味着 CPU 不需要等上一条 popcnt 做完，每个周期都可以发射（Issue）一条新的 popcnt 指令进入流水线。
+> - `popcnt` 指令延迟和吞吐查询：https://zhuanlan.zhihu.com/p/681293647
+
+**指令级并行ILP**：
+- 公式：
+  $T_{total} = \text{Latency} + (\text{Count} - 1) \times \text{ThroughputInterval}$
+
 #### Trick 2：Fused Masked Expand-Load
 
 V1 先 `vmovdqu8` 加载到 ZMM，再 `vpexpandb` 就地扩展（2 条指令）。V2 使用 `vpexpandb zmm{k}{z}, [mem]` 一条指令直接从内存做掩码扩展加载：
