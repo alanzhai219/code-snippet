@@ -60,6 +60,8 @@ public:
 
             for (int chunk = 0; chunk < 64; ++chunk) {
                 uint64_t mask = bitmask_[bm_base + chunk];
+                // it is a C++ api, which means it can be computed at JIT-compile time, NOT runtime!
+                // so it becomes an immediate constant in the generated code, NOT a register variable.
                 int popcnt = __builtin_popcountll(mask);
                 int dst_off = dst_base + chunk * 64;
 

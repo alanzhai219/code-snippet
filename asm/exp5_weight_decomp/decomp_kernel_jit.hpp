@@ -83,8 +83,10 @@ public:
         kmovq(rax, k3); push(rax);
         kmovq(rax, k4); push(rax);
 
+        // input
         mov(compressed_ptr, ptr[param1 + GET_OFF(compressed_buf)]);
         mov(reg_ptr_compressed_bitmask, ptr[param1 + GET_OFF(bitmask_ptr)]);
+        // output
         mov(reg_ptr_decomp_dst, ptr[param1 + GET_OFF(decomp_buf)]);
 
         // like address assignment:
