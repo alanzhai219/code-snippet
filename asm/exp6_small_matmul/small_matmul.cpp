@@ -49,14 +49,14 @@ namespace utils {
 //     static constexpr size_t vlen = 16;
 // };
 
-constexpr Xbyak::Operand::Code abi_param_regs[] = {
-    Xbyak::Operand::RDI,
-    Xbyak::Operand::RSI,
-    Xbyak::Operand::RDX,
-    Xbyak::Operand::RCX,
-    Xbyak::Operand::R8,
-    Xbyak::Operand::R9
-};
+// constexpr Xbyak::Operand::Code abi_param_regs[] = {
+//     Xbyak::Operand::RDI,
+//     Xbyak::Operand::RSI,
+//     Xbyak::Operand::RDX,
+//     Xbyak::Operand::RCX,
+//     Xbyak::Operand::R8,
+//     Xbyak::Operand::R9
+// };
 
 } // namespace utils
 
@@ -98,13 +98,14 @@ public:
             cmp(reg_work_amount, 0); 
             je(loop_end_label, T_NEAR);
 
-            // load
+            // load mat A to 4 vmm registers
             for (size_t m = 0; m < _jcp.M; m++) {
                 for (size_t k = 0; k < _jcp.K; k++) {
                     uni_vmovss(vmm_input1[m * _jcp.K + k], ptr[reg_input1]);
                     add(reg_input1, sizeof(float));
                 }
             }
+            // load mat B to 4 vmm registers
             for (size_t k = 0; k < _jcp.K; k++) {
                 for (size_t n = 0; n < _jcp.N; n++) {
                     uni_vmovss(vmm_input2[k * _jcp.N + n], ptr[reg_input2]);
@@ -160,9 +161,7 @@ private:
     //                                          isa == cpu_isa_t::avx2,
     //                                          Xbyak::Ymm,
     //                                          Xbyak::Zmm>::type;
-    using Vmm = typename std::conditional<isa == cpu_isa_t::avx2,
-                                          Xbyak::Ymm,
-                                          Xbyak::Zmm>::type;
+    using Vmm = typename std::conditional<isa == cpu_isa_t::avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
     // const int vlen = utils::vreg_traits_t<Vmm>::vlen; 
 
     // 寄存器分配
@@ -170,7 +169,8 @@ private:
     Xbyak::Reg64 reg_input2 = r9;
     Xbyak::Reg64 reg_out = r10;
     Xbyak::Reg64 reg_work_amount = r11;
-    Xbyak::Reg64 reg_params = Xbyak::Reg64(utils::abi_param_regs[0]); // RDI
+    // Xbyak::Reg64 reg_params = Xbyak::Reg64(utils::abi_param_regs[0]); // RDI
+    Xbyak::Reg64 reg_params = rdi;
 
     // 向量寄存器分配
     Vmm vmm_input1[4] = {Vmm(0), Vmm(1), Vmm(2), Vmm(3)};
@@ -182,22 +182,25 @@ private:
 
     // --- 辅助函数 ---
     void uni_vmovss(const Xbyak::Address &addr, const Xbyak::Xmm &x) {
-        if (isa == avx2 || isa == avx512)
+        if (isa == avx2 || isa == avx512) {
             vmovss(addr, x);
-        else
+        } else {
             movss(addr, x);
+        }
     }
     void uni_vmovss(const Xbyak::Xmm &x, const Xbyak::Address &addr) {
-        if (isa == avx2 || isa == avx512)
+        if (isa == avx2 || isa == avx512) {
             vmovss(x, addr);
-        else
+        } else {
             movss(x, addr);
+        }
     }
     void uni_vmovss(const Xbyak::Xmm &x1, const Xbyak::Xmm &x2) {
-        if (isa == avx2 || isa == avx512)
+        if (isa == avx2 || isa == avx512) {
             vmovss(x1, x1, x2);
-        else
+        } else {
             movss(x1, x2);
+        }
     }
     void uni_vmovss(const Xbyak::Address &addr, const Xbyak::Ymm &x) {
         vmovss(addr, Xbyak::Xmm(x.getIdx()));
@@ -212,23 +215,24 @@ private:
     // 
     void uni_vpxor(const Xbyak::Xmm &x1, const Xbyak::Xmm &x2,
             const Xbyak::Operand &op) {
-        if (isa == avx512)
+        if (isa == avx512) {
             vpxord(x1, x2, op);
-        else if (isa == avx2)
+        } else if (isa == avx2) {
             vpxor(x1, x2, op);
-        else {
+        } else {
             if (!x1.isEqualIfNotInherited(x2)) movdqa(x1, x2);
             pxor(x1, op);
         }
     }
     void uni_vpxor(const Xbyak::Ymm &x1, const Xbyak::Ymm &x2,
             const Xbyak::Operand &op) {
-        if (isa == avx512)
+        if (isa == avx512) {
             vpxord(x1, x2, op);
-        else if (isa == avx2)
+        } else if (isa == avx2) {
             vpxor(x1, x2, op);
-        else
+        } else {
             vxorps(x1, x2, op);
+        }
     }
     void uni_vpxor(const Xbyak::Zmm &x1, const Xbyak::Zmm &x2,
             const Xbyak::Operand &op) {
@@ -292,7 +296,7 @@ int main() {
     jcp.K = 2;
     jcp.N = 2;
 
-    const size_t batch_size = 2;
+    const size_t batch_size = 200;
     const size_t mk_size = jcp.M * jcp.K;
     const size_t kn_size = jcp.K * jcp.N;
     const size_t mn_size = jcp.M * jcp.N;
