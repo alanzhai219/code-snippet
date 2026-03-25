@@ -296,7 +296,7 @@ int main() {
     jcp.K = 2;
     jcp.N = 2;
 
-    const size_t batch_size = 200;
+    const size_t batch_size = 2;
     const size_t mk_size = jcp.M * jcp.K;
     const size_t kn_size = jcp.K * jcp.N;
     const size_t mn_size = jcp.M * jcp.N;
