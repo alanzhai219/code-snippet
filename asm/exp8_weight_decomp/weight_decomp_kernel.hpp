@@ -70,10 +70,7 @@ enum class isa_t {
 template <isa_t isa>
 class WeightDecompKernel : public Xbyak::CodeGenerator {
 public:
-    explicit WeightDecompKernel(const compile_params_t& jcp)
-        : Xbyak::CodeGenerator(4096 * 4, Xbyak::AutoGrow)
-        , jcp_(jcp)
-    {
+    WeightDecompKernel(const compile_params_t& jcp) : Xbyak::CodeGenerator(4096 * 4, Xbyak::AutoGrow), jcp_(jcp) {
         // 检查 CPU 是否支持目标 ISA
         Xbyak::util::Cpu cpu;
         if constexpr (isa == isa_t::avx512) {
@@ -94,6 +91,8 @@ public:
                 throw std::runtime_error("F16C is required for f16 weight input");
         }
 
+        assert(div_up(jcp_.oc_size, get_vec_size()) <= unroll_factor && "oc_size too large for register allocation");
+
         generate();
         ready();
     }
@@ -106,6 +105,11 @@ public:
     size_t get_vec_size() const { return vec_size; }
 
 private:
+    // ========================================================================
+    // 成员变量
+    // ========================================================================
+    compile_params_t jcp_;
+
     // ========================================================================
     // ISA 相关类型与常量 (编译时确定)
     // ========================================================================
@@ -126,13 +130,13 @@ private:
     // ========================================================================
     static constexpr int unroll_factor = 4;
 
-    Vmm vmm_weights(int ocb)     const { return Vmm(ocb); }
-    Vmm vmm_scales(int ocb)      const { return Vmm(unroll_factor + ocb); }
-    Vmm vmm_zero_points(int ocb) const { return Vmm(2 * unroll_factor + ocb); }
-    Vmm vmm_tmp(int idx)         const { return Vmm(n_vregs - idx - 1); }
+    Vmm vmm_weights(int ocb)     const { return Vmm(ocb); } // vmm0-vmm3 用于权重加载和处理
+    Vmm vmm_scales(int ocb)      const { return Vmm(unroll_factor + ocb); } // vmm4-vmm7 用于 scale
+    Vmm vmm_zero_points(int ocb) const { return Vmm(2 * unroll_factor + ocb); } // vmm8-vmm11 用于 zero_point
+    Vmm vmm_tmp(int idx)         const { return Vmm(n_vregs - idx - 1); } // vmm28-vmm31 用于临时计算
 
     // 查找表寄存器
-    // - AVX-512 nf4/f4_e2m1: vmm_lookup() = 完整 16 项 LUT
+    // - AVX-512 nf4/f4_e2m1:  vmm_lookup() = 完整 16 项 LUT
     // - AVX2 nf4:             vmm_lookup_low() + vmm_lookup_high() = 2×8 项
     // - AVX2 f4_e2m1:         vmm_lookup() = 8 项 abs LUT
     Vmm vmm_lookup()      const { return vmm_tmp(0); }  // n_vregs-1
@@ -164,28 +168,31 @@ private:
     // 用于 vmovups 等需要指定内存大小的场景
 
     auto make_vmm_addr(const Xbyak::Reg64& base, size_t offset = 0) const {
-        if constexpr (isa == isa_t::avx512)
+        if constexpr (isa == isa_t::avx512) {
             return zword[base + offset];
-        else
+        } else {
             return yword[base + offset];
+        }
     }
 
     // 权重加载地址: byte/sub-byte类型需要 xword(128-bit) 或 qword(64-bit)
     // AVX-512: vpmovzxbd zmm, xword (从16字节读16值)
     // AVX2:    vpmovzxbd ymm, qword (从8字节读8值)
     auto make_byte_load_addr(const Xbyak::Reg64& base, size_t offset = 0) const {
-        if constexpr (isa == isa_t::avx512)
+        if constexpr (isa == isa_t::avx512) {
             return xword[base + offset];
-        else
+        } else {
             return qword[base + offset];
+        }
     }
 
     // f16 加载地址: AVX-512 从 yword (32字节=16×f16), AVX2 从 xword (16字节=8×f16)
     auto make_f16_load_addr(const Xbyak::Reg64& base, size_t offset = 0) const {
-        if constexpr (isa == isa_t::avx512)
+        if constexpr (isa == isa_t::avx512) {
             return yword[base + offset];
-        else
+        } else {
             return xword[base + offset];
+        }
     }
 
     // ========================================================================
@@ -193,8 +200,10 @@ private:
     // ========================================================================
     void generate() {
         // Preamble: 保存 callee-saved 寄存器 (System V ABI)
+        // 帧指针建立（frame pointer setup / establish frame pointer）
         push(Xbyak::util::rbp);
         mov(Xbyak::util::rbp, Xbyak::util::rsp);
+        // push 5 个 callee-saved 寄存器 (rbx, r12-r15)
         push(Xbyak::util::rbx);
         push(Xbyak::util::r12);
         push(Xbyak::util::r13);
@@ -204,10 +213,12 @@ private:
         // 从 runtime_params_t 加载参数到 GPR
         mov(reg_weights,    qword[reg_param + offsetof(runtime_params_t, weights_ptr)]);
         mov(reg_decomp_buf, qword[reg_param + offsetof(runtime_params_t, decomp_buffer_ptr)]);
-        if (jcp_.with_scales)
+        if (jcp_.with_scales) {
             mov(reg_scales, qword[reg_param + offsetof(runtime_params_t, scales_ptr)]);
-        if (jcp_.with_zero_points)
+        }
+        if (jcp_.with_zero_points) {
             mov(reg_zero_points, qword[reg_param + offsetof(runtime_params_t, zero_points_ptr)]);
+        }
         mov(reg_ic_size, qword[reg_param + offsetof(runtime_params_t, ic_size)]);
 
         // 加载查找表常量 (nf4 / f4_e2m1)
@@ -215,14 +226,16 @@ private:
 
         // 预加载 scale 和 zero_point 到向量寄存器
         if (jcp_.with_scales) {
-            init_decomp_params(
-                [this](int ocb) { return vmm_scales(ocb); },
-                reg_scales, jcp_.broadcast_scales, jcp_.scales_dt);
+            init_decomp_params([this](int ocb) { return vmm_scales(ocb); },
+                               reg_scales,
+                               jcp_.broadcast_scales,
+                               jcp_.scales_dt);
         }
         if (jcp_.with_zero_points) {
-            init_decomp_params(
-                [this](int ocb) { return vmm_zero_points(ocb); },
-                reg_zero_points, jcp_.broadcast_zero_points, jcp_.zero_points_dt);
+            init_decomp_params([this](int ocb) { return vmm_zero_points(ocb); },
+                               reg_zero_points,
+                               jcp_.broadcast_zero_points,
+                               jcp_.zero_points_dt);
         }
 
         // IC group 循环
@@ -234,6 +247,9 @@ private:
         pop(Xbyak::util::r13);
         pop(Xbyak::util::r12);
         pop(Xbyak::util::rbx);
+        // 恢复栈帧并返回 Restore stack frame and return
+        // leave() 伪指令等价于:
+        mov(Xbyak::util::rsp, Xbyak::util::rbp);
         pop(Xbyak::util::rbp);
         ret();
     }
@@ -244,10 +260,22 @@ private:
     void load_lookup_tables() {
         if (jcp_.weights_dt == data_type_t::nf4) {
             static const float nf4_lookup[16] = {
-                -1.0f, -0.6961928009986877f, -0.5250730514526367f, -0.39491748809814453f,
-                -0.28444138169288635f, -0.18477343022823334f, -0.09105003625154495f, 0.0f,
-                0.07958029955625534f, 0.16093020141124725f, 0.24611230194568634f, 0.33791524171829224f,
-                0.44070982933044434f, 0.5626170039176941f, 0.7229568362236023f, 1.0f
+                -1.0f,
+                -0.6961928009986877f,
+                -0.5250730514526367f,
+                -0.39491748809814453f,
+                -0.28444138169288635f,
+                -0.18477343022823334f,
+                -0.09105003625154495f,
+                0.0f,
+                0.07958029955625534f,
+                0.16093020141124725f,
+                0.24611230194568634f,
+                0.33791524171829224f,
+                0.44070982933044434f,
+                0.5626170039176941f,
+                0.7229568362236023f,
+                1.0f
             };
 
             if constexpr (isa == isa_t::avx512) {
@@ -273,17 +301,36 @@ private:
             if constexpr (isa == isa_t::avx512) {
                 // AVX-512: 完整 16 项 LUT (正值 + 负值)
                 static const float f4_lookup[16] = {
-                     0.0f,   0.5f,   1.0f,   1.5f,
-                     2.0f,   3.0f,   4.0f,   6.0f,
-                    -0.0f,  -0.5f,  -1.0f,  -1.5f,
-                    -2.0f,  -3.0f,  -4.0f,  -6.0f
+                    0.0f,
+                    0.5f,
+                    1.0f,
+                    1.5f,
+                    2.0f,
+                    3.0f,
+                    4.0f,
+                    6.0f,
+                    -0.0f,
+                    -0.5f,
+                    -1.0f,
+                    -1.5f,
+                    -2.0f,
+                    -3.0f,
+                    -4.0f,
+                    -6.0f
                 };
                 mov(reg_tmp, reinterpret_cast<size_t>(f4_lookup));
                 vmovups(vmm_lookup(), zword[reg_tmp]);
             } else {
                 // AVX2: 仅 8 项绝对值 LUT, 符号单独处理
                 static const float f4_lookup_abs[8] = {
-                    0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f
+                    0.0f,
+                    0.5f,
+                    1.0f,
+                    1.5f,
+                    2.0f,
+                    3.0f,
+                    4.0f,
+                    6.0f
                 };
                 mov(reg_tmp, reinterpret_cast<size_t>(f4_lookup_abs));
                 vmovups(vmm_lookup(), yword[reg_tmp]);
@@ -302,12 +349,12 @@ private:
     // ========================================================================
     // 初始化反量化参数 (scale / zero_point) 到向量寄存器
     // ========================================================================
-    void init_decomp_params(
-        std::function<Vmm(int)> vmm_fn,
-        Xbyak::Reg64 reg_ptr,
-        bool broadcast,
-        data_type_t dt)
-    {
+    void init_decomp_params(std::function<Vmm(int)> vmm_fn,
+                            Xbyak::Reg64 reg_ptr,
+                            bool broadcast,
+                            data_type_t dt) {
+        // there is a limitation that oc_blocks_num must be <= unroll_factor (4)
+        // otherwise we need to spill registers or use a loop to load parameters in chunks.
         size_t oc_blocks_num = div_up(jcp_.oc_size, vec_size);
 
         for (size_t ocb = 0; ocb < oc_blocks_num; ocb++) {
@@ -321,10 +368,11 @@ private:
                         auto xmm = Xmm(vmm_fn(ocb).getIdx());
                         auto reg32 = Xbyak::Reg32(reg_tmp.getIdx());
                         movzx(reg32, byte[reg_ptr]);
-                        if constexpr (isa == isa_t::avx512)
+                        if constexpr (isa == isa_t::avx512) {
                             vmovq(xmm, reg_tmp);
-                        else
+                        } else {
                             vmovd(xmm, reg32);
+                        }
                         vcvtdq2ps(xmm, xmm);
                         vbroadcastss(vmm_fn(ocb), xmm);
                         break;
@@ -334,10 +382,11 @@ private:
                         auto reg32 = Xbyak::Reg32(reg_tmp.getIdx());
                         movzx(reg32, byte[reg_ptr]);
                         and_(reg32, 0x3);
-                        if constexpr (isa == isa_t::avx512)
+                        if constexpr (isa == isa_t::avx512) {
                             vmovq(xmm, reg_tmp);
-                        else
+                        } else {
                             vmovd(xmm, reg32);
+                        }
                         vcvtdq2ps(xmm, xmm);
                         vbroadcastss(vmm_fn(ocb), xmm);
                         break;
@@ -346,10 +395,11 @@ private:
                         auto xmm = Xmm(vmm_fn(ocb).getIdx());
                         auto reg32 = Xbyak::Reg32(reg_tmp.getIdx());
                         movzx(reg32, byte[reg_ptr]);
-                        if constexpr (isa == isa_t::avx512)
+                        if constexpr (isa == isa_t::avx512) {
                             vmovq(xmm, reg_tmp);
-                        else
+                        } else {
                             vmovd(xmm, reg32);
+                        }
                         vpslld(xmm, xmm, 23);
                         vbroadcastss(vmm_fn(ocb), xmm);
                         break;
@@ -537,6 +587,7 @@ private:
         Xbyak::Label ic_loop_label;
         Xbyak::Label ic_end_label;
 
+        align(64);
         L(ic_loop_label);
         {
             cmp(reg_ic_size, 1);
@@ -549,8 +600,8 @@ private:
             }
 
             dec(reg_ic_size);
-            add(reg_weights, weights_dt_size * jcp_.oc_size * jcp_.ic_internal_size / pack_scale);
-            add(reg_decomp_buf, decomp_dt_size * jcp_.oc_size * jcp_.ic_internal_size);
+            add(reg_weights, jcp_.oc_size * weights_dt_size);
+            add(reg_decomp_buf, jcp_.oc_size * jcp_.ic_internal_size * decomp_dt_size);
 
             jmp(ic_loop_label, Xbyak::CodeGenerator::T_NEAR);
         }
@@ -560,23 +611,26 @@ private:
     // ========================================================================
     // f32/f16 输出路径
     // ========================================================================
-    void generate_f32_path(
-        size_t oc_blocks_num,
-        size_t weights_dt_size,
-        size_t pack_scale,
-        size_t decomp_dt_size)
-    {
+    void generate_f32_path(size_t oc_blocks_num,
+                           size_t weights_dt_size,
+                           size_t pack_scale,
+                           size_t decomp_dt_size) {
         for (size_t ocb = 0; ocb < oc_blocks_num; ocb++) {
             for (size_t ic = 0; ic < jcp_.ic_internal_size; ic++) {
-                size_t weights_offset = ocb * jcp_.ic_internal_size * vec_size * weights_dt_size / pack_scale;
+                // vec_size: 向量寄存器的字节数
+                // 每次外层循环，只解压缩一个 oc block (vec_size 个输出通道)，但需要处理所有 ic_internal_size 个输入通道
+                // 每次内层循环，加载一个 ic_internal 的权重块 (oc block × 1 ic)，解压缩并存储到对应位置
+                size_t weights_offset = ocb * vec_size * weights_dt_size;
                 auto weights_addr = make_byte_load_addr(reg_weights, weights_offset);
 
                 load_weights(vmm_weights(0), weights_addr, ic);
 
-                if (jcp_.with_zero_points)
+                if (jcp_.with_zero_points) {
                     vsubps(vmm_weights(0), vmm_weights(0), vmm_zero_points(ocb));
-                if (jcp_.with_scales)
+                }
+                if (jcp_.with_scales) {
                     vmulps(vmm_weights(0), vmm_weights(0), vmm_scales(ocb));
+                }
 
                 size_t decomp_offset = (ic * jcp_.oc_size + ocb * vec_size) * decomp_dt_size;
                 store_weights(make_vmm_addr(reg_decomp_buf, decomp_offset), vmm_weights(0));
@@ -587,12 +641,10 @@ private:
     // ========================================================================
     // bf16 输出路径 (仅 AVX-512)
     // ========================================================================
-    void generate_bf16_path(
-        size_t oc_blocks_num,
-        size_t weights_dt_size,
-        size_t pack_scale,
-        size_t decomp_dt_size)
-    {
+    void generate_bf16_path(size_t oc_blocks_num,
+                            size_t weights_dt_size,
+                            size_t pack_scale,
+                            size_t decomp_dt_size) {
         for (size_t ocb = 0; ocb < oc_blocks_num; ocb++) {
             // 加载并反量化所有 ic_internal 权重
             for (size_t ic = 0; ic < jcp_.ic_internal_size; ic++) {
@@ -605,10 +657,12 @@ private:
                 auto vmm_load = vmm_weights(ic);
                 load_weights(vmm_load, make_byte_load_addr(reg_weights, weights_offset), ic);
 
-                if (jcp_.with_zero_points)
+                if (jcp_.with_zero_points) {
                     vsubps(vmm_load, vmm_load, vmm_zero_points(ocb));
-                if (jcp_.with_scales)
+                }
+                if (jcp_.with_scales) {
                     vmulps(vmm_load, vmm_load, vmm_scales(ocb));
+                }
             }
 
             // f32 → bf16 + 交织
@@ -639,11 +693,6 @@ private:
             }
         }
     }
-
-    // ========================================================================
-    // 成员变量
-    // ========================================================================
-    compile_params_t jcp_;
 };
 
 } // namespace weight_decomp

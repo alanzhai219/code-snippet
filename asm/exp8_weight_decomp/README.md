@@ -128,11 +128,42 @@ struct runtime_params_t {
     const void *decomp_buffer_ptr; // 解压缩输出缓冲区
     const void *scales_ptr;        // scale 数组（可选）
     const void *zero_points_ptr;   // zero point 数组（可选）
-    size_t ic_size;                // IC 分组数（循环次数）
+    size_t ic_size;                // IC 分组数（循环次数）also named ig
 };
 ```
 
 ### 内存布局
+
+### 默认权重
+
+- 输入布局为 **IC group-major**，即权重按 IC group 分块存储，每个 group 内包含 `oc_size × ic_internal_size` 个逻辑元素。
+- 输出布局为 **IC-major (Row-major)**, 即先按 IC group 存储，IC 内部再按 OC 存储。
+- scale/zero_point 按 OC 维度索引, 在所有 IC group 之间共享（不随 IC 变化）。
+
+```
+# 举例说明
+假设: 
+- oc_size=128 (8 x AVX-512 向量宽度, 即N=128)
+- ic_internal_size=2 (u4 权重)
+则每个 IC group 包含 256 个逻辑元素 (128 oc × 2 ic)，
+对应 128 bytes 的压缩权重（每 byte 存 2 个 u4 值）。
+权重内存布局 (weights_ptr):
+IC group 0: [byte0][byte1]...[byte127]   (128 bytes = 256 个 u4 值)
+IC group 1: [byte128][byte129]...[byte255]   (128 bytes = 256 个 u4 值)
+...
+IC group ig: [byte(ig*128)]...[byte((ig+1)*128-1)]
+输出内存布局 (decomp_buffer_ptr):
+IC group 0:
+  ic=0: [oc0_ic0_f32][oc1_ic0_f32]...[oc127_ic0_f32]   (512 bytes)
+  ic=1: [oc0_ic1_f32][oc1_ic1_f32]...[oc127_ic1_f32]   (512 bytes)
+IC group 1:
+  ic=0: [oc0_ic0_f32][oc1_ic0_f32]...[oc127_ic0_f32]   (512 bytes)
+  ic=1: [oc0_ic1_f32][oc1_ic1_f32]...[oc127_ic1_f32]   (512 bytes)
+...
+IC group ig:
+  ic=0: [oc0_ic0_f32][oc1_ic0_f32]...[oc127_ic0_f32]   (512 bytes)
+  ic=1: [oc0_ic1_f32][oc1_ic1_f32]...[oc127_ic1_f32]   (512 bytes)
+```
 
 #### 维度约定
 
@@ -674,6 +705,116 @@ $$
 byte value = v
 vpslld v, v, 23   →  IEEE754: [0][v(8bit)][00...0(23bit)]  =  2^(v-127)
 ```
+
+### ic循环
+
+关键在于 `weights_offset` **不随 `ic` 变化**，而不同 `ic` 的数据是通过 `load_weights()` 内部的**位移操作**从同一地址提取的。
+
+分两种情况：
+
+**1. byte+ 类型 (u8/s8/f16/bf16)：`ic_internal_size == 1`**
+
+内层循环只执行一次（`ic=0`），不存在遍历问题。每个通道独占一个完整字节/word。
+
+**2. sub-byte 类型 (u4/nf4/u2 等)：`ic_internal_size > 1`**
+
+多个 IC 值打包在同一字节中，所以 `weights_offset` 对所有 `ic` 都相同——它们读的是**同一块内存**。区分靠 `load_weights(vmm, addr, ic)` 的第三个参数 `ic`：
+
+以 **u4** 为例（`ic_internal_size=2`），一个字节 `[high_nibble | low_nibble]`：
+- `ic=0`（偶数）→ `vpsrld(vmm, vmm, 4)` → 提取高 4 位
+- `ic=1`（奇数）→ `vpslld 28` + `vpsrld 28` → 提取低 4 位
+
+以 **u2** 为例（`ic_internal_size=4`），一个字节 `[b7b6 | b5b4 | b3b2 | b1b0]`：
+- `ic=0` → `vpsrld(vmm, vmm, 6)` → 提取 bit[7:6]
+- `ic=1` → `vpslld 26` + `vpsrld 30` → 提取 bit[5:4]
+- `ic=2` → `vpslld 28` + `vpsrld 30` → 提取 bit[3:2]
+- `ic=3` → `vpslld 30` + `vpsrld 30` → 提取 bit[1:0]
+
+所以遍历逻辑是：
+
+```
+外层 ocb:  选择哪一块 vec_size 个 OC 通道 (地址偏移)
+内层 ic:   从同一地址的同一字节中，用不同位移提取不同 IC 的值
+```
+
+**同一地址，不同位移** —— 这就是 sub-byte packing 的核心设计。
+
+### 输出buffer
+
+
+
+输出 buffer 的布局是 **行主序 (row-major)**，形状为 `[ic_internal_size, oc_size]`：
+
+```
+ic=0:  [ oc_0, oc_1, oc_2, ..., oc_{oc_size-1} ]
+ic=1:  [ oc_0, oc_1, oc_2, ..., oc_{oc_size-1} ]
+...
+```
+
+公式拆解：
+
+- `jcp_.oc_size * ic`：跳过前 `ic` 行，每行 `oc_size` 个元素 → **行偏移**
+- `ocb * vec_size`：在当前行内，跳到第 `ocb` 块的起始位置 → **列偏移**
+- 两者相加得到元素索引，再乘 `decomp_dt_size` 转为字节偏移
+
+以 AVX-512 + u4 为例（`oc_size=32, vec_size=16, ic_internal_size=2`）：
+
+```
+迭代 (ocb=0, ic=0): offset = (0*16 + 32*0) * 4 = 0     → 写入 [0][0..15]
+迭代 (ocb=0, ic=1): offset = (0*16 + 32*1) * 4 = 128   → 写入 [1][0..15]
+迭代 (ocb=1, ic=0): offset = (1*16 + 32*0) * 4 = 64    → 写入 [0][16..31]
+迭代 (ocb=1, ic=1): offset = (1*16 + 32*1) * 4 = 192   → 写入 [1][16..31]
+```
+
+最终输出：
+```
+行0: [oc_0..oc_15] [oc_16..oc_31]   ← ic=0 的全部 OC
+行1: [oc_0..oc_15] [oc_16..oc_31]   ← ic=1 的全部 OC
+```
+
+就是标准的二维数组寻址：`output[ic][ocb * vec_size]`。
+
+### 输入buffer
+
+输入（压缩权重）buffer 的布局是**列主序 (column-major)**，形状为 `[oc_size, ic_internal_size]`，但由于 sub-byte packing，多个 ic_internal 会被打包进同一个字节。
+
+具体展开如下：
+
+- **每个 oc block（vec_size 个通道）为一组，连续存储**
+- **每个 oc block 内，所有 ic_internal 的数据打包在一起**
+
+以 AVX-512 + u4 为例（`oc_size=32, vec_size=16, ic_internal_size=2`）：
+
+- 总共有 $32/16=2$ 个 oc block
+- 每个 oc block 占 $vec\_size \times weights\_dt\_size = 16 \times 1 = 16$ 字节（u4 实际上 2 个通道打包 1 字节，但这里每次只读 16 字节，后续用位移提取）
+
+内存布局如下：
+
+```
+[ocb=0]  ic=0,1 的数据（16字节，打包）
+[ocb=1]  ic=0,1 的数据（16字节，打包）
+```
+
+更细致地看，**每个 oc block 的 1 字节，包含了 ic=0 和 ic=1 的权重**：
+
+- 第 0 字节：oc0, ic0/ic1
+- 第 1 字节：oc1, ic0/ic1
+- ...
+- 第 15 字节：oc15, ic0/ic1
+
+**总结：**
+
+- 外层 oc block，内层 ic_internal
+- 每个 oc block 的所有 ic_internal 权重打包在一起，按字节顺序排列
+- sub-byte 类型（u4/u2/nf4等）多个 ic_internal 共用同一字节，通过位移提取
+
+公式化描述：
+
+$$
+\text{input}[ocb][byte] = \text{packed}(ocb \times vec\_size + byte, ic=0..ic\_internal\_size-1)
+$$
+
+即：**每个 oc block 的每个通道，其 ic_internal 个权重被打包在同一字节/连续字节中**。
 
 ---
 
