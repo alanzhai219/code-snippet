@@ -1,39 +1,27 @@
 import math
-import random
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-
-def zeros_2d(rows: int, cols: int) -> List[List[float]]:
-    return [[0.0 for _ in range(cols)] for _ in range(rows)]
-
-
-def zeros_3d(a: int, b: int, c: int) -> List[List[List[float]]]:
-    return [[[0.0 for _ in range(c)] for _ in range(b)] for _ in range(a)]
+import torch
+from torch import Tensor
 
 
-def softmax(x: List[float]) -> List[float]:
-    max_v = max(x)
-    values = [math.exp(v - max_v) for v in x]
-    denom = sum(values)
-    return [v / denom for v in values]
+def zeros_2d(rows: int, cols: int, *, dtype: torch.dtype = torch.float32) -> Tensor:
+    return torch.zeros((rows, cols), dtype=dtype)
 
 
-def dot(a: List[float], b: List[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))
+def zeros_3d(a: int, b: int, c: int, *, dtype: torch.dtype = torch.float32) -> Tensor:
+    return torch.zeros((a, b, c), dtype=dtype)
 
 
-def linear(x: List[List[float]], w: List[List[float]]) -> List[List[float]]:
-    rows = len(x)
-    in_dim = len(w)
-    out_dim = len(w[0])
-    y = zeros_2d(rows, out_dim)
-    for r in range(rows):
-        for i in range(in_dim):
-            xv = x[r][i]
-            for j in range(out_dim):
-                y[r][j] += xv * w[i][j]
-    return y
+def linear(x: Tensor, w: Tensor) -> Tensor:
+    return x @ w
+
+
+def ensure_tensor2d(x) -> Tensor:
+    if isinstance(x, Tensor):
+        return x.to(dtype=torch.float32)
+    return torch.tensor(x, dtype=torch.float32)
 
 
 @dataclass
@@ -214,19 +202,15 @@ class ExecutorPACommon:
 
 class Int8Quantizer:
     @staticmethod
-    def quantize_row(x: List[float]) -> Tuple[List[int], float]:
-        max_abs = max(abs(v) for v in x) if x else 0.0
-        scale = 1.0 if max_abs < 1e-12 else max_abs / 127.0
-        out = []
-        for v in x:
-            qv = round(v / scale)
-            qv = max(-127, min(127, qv))
-            out.append(int(qv))
-        return out, scale
+    def quantize_rows(x: Tensor) -> Tuple[Tensor, Tensor]:
+        max_abs = x.abs().amax(dim=-1)
+        scale = torch.where(max_abs < 1e-12, torch.ones_like(max_abs), max_abs / 127.0)
+        quantized = torch.round(x / scale.unsqueeze(-1)).clamp(-127, 127).to(torch.int8)
+        return quantized, scale
 
     @staticmethod
-    def dequantize_row(q: List[int], scale: float) -> List[float]:
-        return [float(v) * scale for v in q]
+    def dequantize_rows(q: Tensor, scale: Tensor) -> Tensor:
+        return q.to(torch.float32) * scale.unsqueeze(-1)
 
 
 class PagedAttentionExecutor:
@@ -247,108 +231,94 @@ class PagedAttentionExecutor:
         self.use_int8_cache = use_int8_cache
         self.common = ExecutorPACommon(block_size)
 
+        cache_shape = (num_blocks, num_heads, block_size, head_size)
         if use_int8_cache:
-            self.k_cache = [[[[0 for _ in range(head_size)] for _ in range(block_size)] for _ in range(num_heads)] for _ in range(num_blocks)]
-            self.v_cache = [[[[0 for _ in range(head_size)] for _ in range(block_size)] for _ in range(num_heads)] for _ in range(num_blocks)]
-            self.k_scale = [[[1.0 for _ in range(block_size)] for _ in range(num_heads)] for _ in range(num_blocks)]
-            self.v_scale = [[[1.0 for _ in range(block_size)] for _ in range(num_heads)] for _ in range(num_blocks)]
+            self.k_cache = torch.zeros(cache_shape, dtype=torch.int8)
+            self.v_cache = torch.zeros(cache_shape, dtype=torch.int8)
+            self.k_scale = torch.ones((num_blocks, num_heads, block_size), dtype=torch.float32)
+            self.v_scale = torch.ones((num_blocks, num_heads, block_size), dtype=torch.float32)
         else:
-            self.k_cache = zeros_3d(num_blocks * num_heads, block_size, head_size)
-            self.v_cache = zeros_3d(num_blocks * num_heads, block_size, head_size)
+            self.k_cache = torch.zeros(cache_shape, dtype=torch.float32)
+            self.v_cache = torch.zeros(cache_shape, dtype=torch.float32)
 
-    def _float_cache_index(self, block: int, head: int) -> int:
-        return block * self.num_heads + head
-
-    def _write_one_token(self, slot: int, k: List[List[float]], v: List[List[float]]):
+    def _write_one_token(self, slot: int, k: Tensor, v: Tensor):
         block = slot // self.block_size
         offset = slot % self.block_size
-        for h in range(self.num_heads):
-            if self.use_int8_cache:
-                qk, sk = Int8Quantizer.quantize_row(k[h])
-                qv, sv = Int8Quantizer.quantize_row(v[h])
-                self.k_cache[block][h][offset] = qk
-                self.v_cache[block][h][offset] = qv
-                self.k_scale[block][h][offset] = sk
-                self.v_scale[block][h][offset] = sv
-            else:
-                idx = self._float_cache_index(block, h)
-                self.k_cache[idx][offset] = list(k[h])
-                self.v_cache[idx][offset] = list(v[h])
+        if self.use_int8_cache:
+            qk, sk = Int8Quantizer.quantize_rows(k)
+            qv, sv = Int8Quantizer.quantize_rows(v)
+            self.k_cache[block, :, offset, :].copy_(qk)
+            self.v_cache[block, :, offset, :].copy_(qv)
+            self.k_scale[block, :, offset].copy_(sk)
+            self.v_scale[block, :, offset].copy_(sv)
+            return
 
-    def write_kv(self, metadata: BatchMetadata, q_lens: List[int], k_new, v_new):
+        self.k_cache[block, :, offset, :].copy_(k)
+        self.v_cache[block, :, offset, :].copy_(v)
+
+    def write_kv(self, metadata: BatchMetadata, q_lens: List[int], k_new: Tensor, v_new: Tensor):
         slots = self.common.build_slot_mapping(metadata, q_lens)
         for token_idx, slot in enumerate(slots):
             self._write_one_token(slot, k_new[token_idx], v_new[token_idx])
 
     def copy_block(self, src_block: int, dst_block: int):
-        for h in range(self.num_heads):
-            for offset in range(self.block_size):
-                if self.use_int8_cache:
-                    self.k_cache[dst_block][h][offset] = list(self.k_cache[src_block][h][offset])
-                    self.v_cache[dst_block][h][offset] = list(self.v_cache[src_block][h][offset])
-                    self.k_scale[dst_block][h][offset] = self.k_scale[src_block][h][offset]
-                    self.v_scale[dst_block][h][offset] = self.v_scale[src_block][h][offset]
-                else:
-                    src_idx = self._float_cache_index(src_block, h)
-                    dst_idx = self._float_cache_index(dst_block, h)
-                    self.k_cache[dst_idx][offset] = list(self.k_cache[src_idx][offset])
-                    self.v_cache[dst_idx][offset] = list(self.v_cache[src_idx][offset])
+        self.k_cache[dst_block].copy_(self.k_cache[src_block])
+        self.v_cache[dst_block].copy_(self.v_cache[src_block])
+        if self.use_int8_cache:
+            self.k_scale[dst_block].copy_(self.k_scale[src_block])
+            self.v_scale[dst_block].copy_(self.v_scale[src_block])
 
-    def _read_token_kv(self, block: int, offset: int) -> Tuple[List[List[float]], List[List[float]]]:
-        k = zeros_2d(self.num_heads, self.head_size)
-        v = zeros_2d(self.num_heads, self.head_size)
-        for h in range(self.num_heads):
-            if self.use_int8_cache:
-                k[h] = Int8Quantizer.dequantize_row(self.k_cache[block][h][offset], self.k_scale[block][h][offset])
-                v[h] = Int8Quantizer.dequantize_row(self.v_cache[block][h][offset], self.v_scale[block][h][offset])
-            else:
-                idx = self._float_cache_index(block, h)
-                k[h] = list(self.k_cache[idx][offset])
-                v[h] = list(self.v_cache[idx][offset])
-        return k, v
+    def _read_token_kv(self, block: int, offset: int) -> Tuple[Tensor, Tensor]:
+        if self.use_int8_cache:
+            k = Int8Quantizer.dequantize_rows(self.k_cache[block, :, offset, :], self.k_scale[block, :, offset])
+            v = Int8Quantizer.dequantize_rows(self.v_cache[block, :, offset, :], self.v_scale[block, :, offset])
+            return k, v
+        return self.k_cache[block, :, offset, :].clone(), self.v_cache[block, :, offset, :].clone()
 
-    def _attention_one_sequence(self, q_seq, metadata: BatchMetadata, seq_idx: int, total_kv_len: int):
+    def _attention_one_sequence(self, q_seq: Tensor, metadata: BatchMetadata, seq_idx: int, total_kv_len: int) -> Tensor:
         ctx_positions = self.common.collect_context_positions(metadata, seq_idx, total_kv_len)
 
-        all_k = []
-        all_v = []
+        all_k: List[Tensor] = []
+        all_v: List[Tensor] = []
         for block, offset in ctx_positions:
             k_tok, v_tok = self._read_token_kv(block, offset)
             all_k.append(k_tok)
             all_v.append(v_tok)
 
-        q_len = len(q_seq)
-        out = zeros_3d(q_len, self.num_heads, self.head_size)
+        kv_k = torch.stack(all_k, dim=0)
+        kv_v = torch.stack(all_v, dim=0)
+
+        q_len = q_seq.shape[0]
+        out = torch.zeros((q_len, self.num_heads, self.head_size), dtype=torch.float32)
         scale = 1.0 / math.sqrt(self.head_size)
         for t in range(q_len):
             causal_kv_len = total_kv_len - (q_len - 1 - t)
-            for h in range(self.num_heads):
-                scores = [dot(q_seq[t][h], all_k[idx][h]) * scale for idx in range(causal_kv_len)]
-                probs = softmax(scores)
-                for idx in range(causal_kv_len):
-                    for d in range(self.head_size):
-                        out[t][h][d] += probs[idx] * all_v[idx][h][d]
+            ctx_k = kv_k[:causal_kv_len]
+            ctx_v = kv_v[:causal_kv_len]
+            scores = torch.einsum("hd,khd->hk", q_seq[t], ctx_k) * scale
+            probs = torch.softmax(scores, dim=-1)
+            out[t] = torch.einsum("hk,khd->hd", probs, ctx_v)
         return out
 
-    def prefill(self, metadata: BatchMetadata, q_lens: List[int], q, k, v):
+    def prefill(self, metadata: BatchMetadata, q_lens: List[int], q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         self.write_kv(metadata, q_lens, k, v)
-        outputs = []
+        outputs: List[Tensor] = []
         token_start = 0
         for seq_idx, q_len in enumerate(q_lens):
             token_end = token_start + q_len
             total_kv_len = metadata.past_lens[seq_idx] + q_len
-            outputs.extend(self._attention_one_sequence(q[token_start:token_end], metadata, seq_idx, total_kv_len))
+            outputs.append(self._attention_one_sequence(q[token_start:token_end], metadata, seq_idx, total_kv_len))
             token_start = token_end
-        return outputs
+        return torch.cat(outputs, dim=0) if outputs else zeros_3d(0, self.num_heads, self.head_size)
 
-    def decode(self, metadata: BatchMetadata, q, k, v):
+    def decode(self, metadata: BatchMetadata, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         q_lens = [1] * len(metadata.past_lens)
         self.write_kv(metadata, q_lens, k, v)
-        outputs = []
+        outputs: List[Tensor] = []
         for seq_idx in range(len(q_lens)):
             total_kv_len = metadata.past_lens[seq_idx] + 1
-            outputs.extend(self._attention_one_sequence(q[seq_idx:seq_idx + 1], metadata, seq_idx, total_kv_len))
-        return outputs
+            outputs.append(self._attention_one_sequence(q[seq_idx:seq_idx + 1], metadata, seq_idx, total_kv_len))
+        return torch.cat(outputs, dim=0) if outputs else zeros_3d(0, self.num_heads, self.head_size)
 
 
 class ToyLayer:
@@ -368,48 +338,36 @@ class ToyLayer:
         self.num_heads = num_heads
         self.head_size = head_size
 
-        rand = random.Random(seed)
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
         proj_size = num_heads * head_size
         scale = 1.0 / math.sqrt(hidden_size)
 
-        def make_matrix(rows: int, cols: int) -> List[List[float]]:
-            return [[rand.gauss(0.0, scale) for _ in range(cols)] for _ in range(rows)]
-
-        self.wq = make_matrix(hidden_size, proj_size)
-        self.wk = make_matrix(hidden_size, proj_size)
-        self.wv = make_matrix(hidden_size, proj_size)
-        self.wo = make_matrix(proj_size, hidden_size)
+        self.wq = torch.randn((hidden_size, proj_size), generator=generator, dtype=torch.float32) * scale
+        self.wk = torch.randn((hidden_size, proj_size), generator=generator, dtype=torch.float32) * scale
+        self.wv = torch.randn((hidden_size, proj_size), generator=generator, dtype=torch.float32) * scale
+        self.wo = torch.randn((proj_size, hidden_size), generator=generator, dtype=torch.float32) * scale
 
         self.pa = PagedAttentionExecutor(layer_id, num_blocks, num_heads, head_size, block_size, use_int8_cache)
 
-    def _project_qkv(self, x):
+    def _project_qkv(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         q = linear(x, self.wq)
         k = linear(x, self.wk)
         v = linear(x, self.wv)
         return self._split_heads(q), self._split_heads(k), self._split_heads(v)
 
-    def _split_heads(self, x):
-        out = zeros_3d(len(x), self.num_heads, self.head_size)
-        for t in range(len(x)):
-            for h in range(self.num_heads):
-                for d in range(self.head_size):
-                    out[t][h][d] = x[t][h * self.head_size + d]
-        return out
+    def _split_heads(self, x: Tensor) -> Tensor:
+        return x.reshape(x.shape[0], self.num_heads, self.head_size)
 
-    def _merge_heads(self, x):
-        out = zeros_2d(len(x), self.num_heads * self.head_size)
-        for t in range(len(x)):
-            for h in range(self.num_heads):
-                for d in range(self.head_size):
-                    out[t][h * self.head_size + d] = x[t][h][d]
-        return out
+    def _merge_heads(self, x: Tensor) -> Tensor:
+        return x.reshape(x.shape[0], self.num_heads * self.head_size)
 
-    def forward_prefill(self, x, metadata: BatchMetadata, q_lens: List[int]):
+    def forward_prefill(self, x: Tensor, metadata: BatchMetadata, q_lens: List[int]) -> Tensor:
         q, k, v = self._project_qkv(x)
         attn_out = self.pa.prefill(metadata, q_lens, q, k, v)
         return linear(self._merge_heads(attn_out), self.wo)
 
-    def forward_decode(self, x, metadata: BatchMetadata):
+    def forward_decode(self, x: Tensor, metadata: BatchMetadata) -> Tensor:
         q, k, v = self._project_qkv(x)
         attn_out = self.pa.decode(metadata, q, k, v)
         return linear(self._merge_heads(attn_out), self.wo)
@@ -455,7 +413,7 @@ class ToyLLMRuntime:
             for layer in self.layers:
                 layer.copy_block(plan.src_block, plan.dst_block)
 
-    def prefill(self, seq_ids: List[int], x, q_lens: List[int]):
+    def prefill(self, seq_ids: List[int], x, q_lens: List[int]) -> Tensor:
         if self.prefill_done:
             raise RuntimeError("prefill already executed")
         copy_plans: List[BlockCopyPlan] = []
@@ -464,7 +422,7 @@ class ToyLLMRuntime:
         self._apply_copy_plans(copy_plans)
         metadata = self.manager.build_batch_metadata(seq_ids, q_lens)
 
-        hidden = x
+        hidden = ensure_tensor2d(x)
         for layer in self.layers:
             hidden = layer.forward_prefill(hidden, metadata, q_lens)
 
@@ -473,7 +431,7 @@ class ToyLLMRuntime:
         self.prefill_done = True
         return hidden
 
-    def decode(self, seq_ids: List[int], x):
+    def decode(self, seq_ids: List[int], x) -> Tensor:
         if not self.prefill_done:
             raise RuntimeError("decode called before prefill")
         q_lens = [1] * len(seq_ids)
@@ -483,7 +441,7 @@ class ToyLLMRuntime:
         self._apply_copy_plans(copy_plans)
         metadata = self.manager.build_batch_metadata(seq_ids, q_lens)
 
-        hidden = x
+        hidden = ensure_tensor2d(x)
         for layer in self.layers:
             hidden = layer.forward_decode(hidden, metadata)
 
@@ -492,13 +450,14 @@ class ToyLLMRuntime:
         return hidden
 
 
-def make_random_tensor2(rows: int, cols: int, seed: int):
-    rand = random.Random(seed)
-    return [[rand.gauss(0.0, 1.0) for _ in range(cols)] for _ in range(rows)]
+def make_random_tensor2(rows: int, cols: int, seed: int) -> Tensor:
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    return torch.randn((rows, cols), generator=generator, dtype=torch.float32)
 
 
-def shape_2d(x) -> Tuple[int, int]:
-    return len(x), (len(x[0]) if x else 0)
+def shape_2d(x: Tensor) -> Tuple[int, int]:
+    return tuple(x.shape)
 
 
 def demo():
@@ -566,4 +525,5 @@ def demo():
 
 
 if __name__ == "__main__":
-    demo()
+    with torch.inference_mode():
+        demo()

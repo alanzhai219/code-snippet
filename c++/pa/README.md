@@ -13,7 +13,7 @@ The project intentionally focuses on learning and explanation rather than peak p
 ## What Is Included
 
 - `python/standalone_pa.py`
-  - A pure standard-library Python teaching implementation
+  - A PyTorch-based Python teaching implementation
   - Supports one prefill followed by multiple decode steps in the same runtime
   - Uses multiple layers to simulate multiple attention op nodes in an LLM
   - Supports simplified int8 KV cache compression
@@ -29,6 +29,9 @@ The project intentionally focuses on learning and explanation rather than peak p
 - `docs/manual_walkthrough.md`
   - A hand-worked example showing how blocks change during one prefill and two decode steps
 
+- `docs/design_zh_cn.md`
+  - A detailed Chinese explanation of the runtime flow, data structures, and design rationale
+
 ## Directory Layout
 
 ```text
@@ -37,6 +40,7 @@ pa/
 ├── cpp/
 │   └── standalone_pa.cpp
 ├── docs/
+│   ├── design_zh_cn.md
 │   └── manual_walkthrough.md
 └── python/
     └── standalone_pa.py
@@ -187,6 +191,7 @@ This is much simpler than production implementations, but it captures the key id
 Requirements:
 
 - Python 3
+- PyTorch
 
 Run:
 
@@ -227,8 +232,9 @@ Expected behavior:
 ## Suggested Reading Order
 
 1. Read this README first
-2. Read `docs/manual_walkthrough.md`
-3. Read `python/standalone_pa.py`
-4. Read `cpp/standalone_pa.cpp`
+2. Read `docs/design_zh_cn.md` if you prefer a Chinese explanation
+3. Read `docs/manual_walkthrough.md`
+4. Read `python/standalone_pa.py`
+5. Read `cpp/standalone_pa.cpp`
 
 The Python version is easier to understand first. The C++ version is included to mirror the same architecture in a systems language.
