@@ -199,14 +199,19 @@ def single_head_attention(x: torch.Tensor) -> torch.Tensor:
     Wk = torch.randn(hidden_size, hidden_size) * 0.1
     Wv = torch.randn(hidden_size, hidden_size) * 0.1
 
-    Q = x @ Wq   # [seq_len, hidden_size] = [10, 32]
-    K = x @ Wk   # [seq_len, hidden_size] = [10, 32]
-    V = x @ Wv   # [seq_len, hidden_size] = [10, 32]
+    Q = torch.matmul(x, Wq)   # [seq_len, hidden_size] = [10, 32]
+    K = torch.matmul(x, Wk)   # [seq_len, hidden_size] = [10, 32]
+    V = torch.matmul(x, Wv)   # [seq_len, hidden_size] = [10, 32]
 
     # attention: 用完整的 32 维向量算点积 → 只产生一组注意力权重
-    score = (Q @ K.T) / math.sqrt(hidden_size)  # [10, 10]
+    score = torch.matmul(Q, K.transpose(0, 1)) / math.sqrt(hidden_size)  # [10, 10]
+
+    # causal mask: token i 只能看到 token 0..i，未来位置填 -inf
+    causal_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+    score = score.masked_fill(causal_mask, float('-inf'))
+
     prob = torch.softmax(score, dim=-1)          # [10, 10]
-    out = prob @ V                                # [10, 32]
+    out = torch.matmul(prob, V)                    # [10, 32]
     return out
 ```
 
@@ -228,9 +233,9 @@ def multi_head_attention(x: torch.Tensor, num_heads: int = 4) -> torch.Tensor:
     Wv = torch.randn(hidden_size, hidden_size) * 0.1
     Wo = torch.randn(hidden_size, hidden_size) * 0.1
 
-    Q = x @ Wq   # [10, 32]
-    K = x @ Wk   # [10, 32]
-    V = x @ Wv   # [10, 32]
+    Q = torch.matmul(x, Wq)   # [10, 32]
+    K = torch.matmul(x, Wk)   # [10, 32]
+    V = torch.matmul(x, Wv)   # [10, 32]
 
     # 关键步骤：reshape 成 [seq_len, num_heads, head_size]，再转成 [num_heads, seq_len, head_size]
     Q = Q.reshape(seq_len, num_heads, head_size).transpose(0, 1)  # [4, 10, 8]
@@ -239,12 +244,18 @@ def multi_head_attention(x: torch.Tensor, num_heads: int = 4) -> torch.Tensor:
 
     # 每个 head 独立算 attention（用 8 维向量，而不是 32 维）
     score = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(head_size)  # [4, 10, 10]
+
+    # causal mask: token i 只能看到 token 0..i，未来位置填 -inf
+    # unsqueeze(0) 让 [seq_len, seq_len] 广播到 [num_heads, seq_len, seq_len]
+    causal_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+    score = score.masked_fill(causal_mask.unsqueeze(0), float('-inf'))
+
     prob = torch.softmax(score, dim=-1)                               # [4, 10, 10]
     head_out = torch.bmm(prob, V)                                     # [4, 10, 8]
 
     # 拼回去
     out = head_out.transpose(0, 1).reshape(seq_len, hidden_size)  # [10, 32]
-    out = out @ Wo                                                 # [10, 32]
+    out = torch.matmul(out, Wo)                                    # [10, 32]
     return out
 ```
 
@@ -256,8 +267,122 @@ def multi_head_attention(x: torch.Tensor, num_heads: int = 4) -> torch.Tensor:
 | 产生几组注意力权重 | 1 组 `[10, 10]` | 4 组 `[10, 10]` |
 | 能学到的关注模式 | 1 种 | 4 种（语法、语义、位置…各学各的） |
 | 计算量 | 基本相同 | 基本相同（总维度没变） |
+| matmul 次数 | 5 次 | 6 次 |
 
-多头 attention 并没有增加参数量——它只是把同样宽度的向量**切开**，让不同子空间各自独立做 attention，最后再拼起来。
+**两个函数各有几次矩阵乘法**
+
+逐行数代码中的 `torch.matmul` / `torch.bmm`，可以精确统计：
+
+**`single_head_attention`：5 次**
+
+| # | 代码 | 作用 | 形状变化 |
+|---|---|---|---|
+| 1 | `torch.matmul(x, Wq)` | 投影得 Q | `[10,32] × [32,32] → [10,32]` |
+| 2 | `torch.matmul(x, Wk)` | 投影得 K | `[10,32] × [32,32] → [10,32]` |
+| 3 | `torch.matmul(x, Wv)` | 投影得 V | `[10,32] × [32,32] → [10,32]` |
+| 4 | `torch.matmul(Q, K.transpose(0,1))` | 算注意力分数 | `[10,32] × [32,10] → [10,10]` |
+| 5 | `torch.matmul(prob, V)` | 加权求和 | `[10,10] × [10,32] → [10,32]` |
+
+没有输出投影矩阵 $W_o$，所以比多头少一次。
+
+**`multi_head_attention`：6 次**
+
+| # | 代码 | 作用 | 形状变化 |
+|---|---|---|---|
+| 1 | `torch.matmul(x, Wq)` | 投影得 Q | `[10,32] × [32,32] → [10,32]` |
+| 2 | `torch.matmul(x, Wk)` | 投影得 K | `[10,32] × [32,32] → [10,32]` |
+| 3 | `torch.matmul(x, Wv)` | 投影得 V | `[10,32] × [32,32] → [10,32]` |
+| 4 | `torch.bmm(Q, K.transpose(1,2))` | 每个 head 算分数 | `[4,10,8] × [4,8,10] → [4,10,10]` |
+| 5 | `torch.bmm(prob, V)` | 每个 head 加权求和 | `[4,10,10] × [4,10,8] → [4,10,8]` |
+| 6 | `torch.matmul(out, Wo)` | 输出投影 | `[10,32] × [32,32] → [10,32]` |
+
+多出的第 6 次就是 $W_o$。多头 attention 需要 $W_o$ 把拼接后的多头输出重新混合——如果不加这一步，各 head 的结果只是简单拼接，head 之间无法交换信息。单头不需要这一步，因为只有一个 head，拼接就是自身。
+
+**计算量（FLOPs）对比**
+
+统一符号：$S$ = seq_len, $H$ = hidden_size, $N$ = num_heads, $D$ = head_size = $H/N$。一次矩阵乘 $[M, K] \times [K, N]$ 的 FLOPs 为 $2MKN$。
+
+投影阶段：
+
+| | 单头 | 多头 | 说明 |
+|---|---|---|---|
+| $W_q, W_k, W_v$ | $3 \times 2SH^2 = 6SH^2$ | $6SH^2$ | 相同 |
+| $W_o$ | 无 | $2SH^2$ | 多头多一次 |
+| **投影小计** | $6SH^2$ | $8SH^2$ | |
+
+Attention 阶段：
+
+- 单头用完整 $H$ 维做点积：$QK^T$ 为 $2S^2H$，$\text{prob} \cdot V$ 为 $2S^2H$，合计 $4S^2H$
+- 多头做 $N$ 次、每次 $D$ 维：$QK^T$ 为 $N \times 2S^2D = 2S^2H$，$\text{prob} \cdot V$ 为 $2S^2H$，合计 $4S^2H$
+
+**Attention 部分的 FLOPs 完全相同**——因为 $N \times D = H$，切分只是重新分配维度，总计算量不变。
+
+总计对比：
+
+| | 投影 | Attention | **总计** |
+|---|---|---|---|
+| 单头 | $6SH^2$ | $4S^2H$ | $6SH^2 + 4S^2H$ |
+| 多头 | $8SH^2$ | $4S^2H$ | $8SH^2 + 4S^2H$ |
+| **差额** | $+2SH^2$ | $0$ | $+2SH^2$ |
+
+多头比单头多出的计算量**只有 $W_o$ 这一次矩阵乘法**。
+
+用 demo 参数代入（$S=10, H=32$）：单头 74240 FLOPs，多头 94720 FLOPs，多头多约 28%，全部来自 $W_o$。
+
+实际模型中哪项占主导取决于 $S$ 和 $H$ 的关系：
+
+| 场景 | 条件 | 主导项 | 单头 vs 多头 |
+|---|---|---|---|
+| 短序列 | $S \ll H$（如 LLaMA-7B: $H=4096, S=128$） | 投影 $SH^2$ | 多头多 $\frac{8}{6} \approx 1.33\times$ 投影开销 |
+| 长序列 | $S \gg H$（如 $S=32768$） | Attention $S^2H$ | **几乎没有差别** |
+| 均衡点 | $S \approx H$ | 两项相当 | 多头多约 20-25% |
+
+**内存和带宽对比**
+
+*参数内存（权重）*
+
+单头 $3H^2$（$W_q, W_k, W_v$），多头 $4H^2$（多一个 $W_o$），多 33%。用 demo 参数（$H=32$, float32）：单头 12 KB，多头 16 KB。实际模型如 LLaMA-7B（$H=4096$）：单头每层约 192 MB，多头每层约 256 MB。
+
+*中间激活内存（推理时峰值）*
+
+关键差异在 score/prob 矩阵：
+
+| 张量 | 单头 | 多头 |
+|---|---|---|
+| Q, K, V | $3SH$ | $3SH$（总量不变） |
+| score + prob | $2S^2$ | $2NS^2$ |
+| 输出 | $SH$ | $2SH$（head_out + 拼接后 out） |
+| **合计** | $4SH + 2S^2$ | $5SH + 2NS^2$ |
+
+多头的注意力矩阵内存是单头的 $N$ 倍。以 LLaMA-7B（$N=32, S=4096$）为例：
+
+$$\text{单头 score+prob}: 2 \times 4096^2 \times 4\text{B} \approx 128\text{MB}$$
+
+$$\text{多头 score+prob}: 32 \times 128\text{MB} \approx 4\text{GB}$$
+
+这也是 FlashAttention 要做**分块计算**的直接原因——避免一次性实例化完整的 $[N, S, S]$ 注意力矩阵。
+
+*内存带宽*
+
+投影阶段的带宽（读权重 + 读写激活）：单头 $3H^2 + 6SH$，多头 $4H^2 + 8SH$，多头多 33%。Attention 阶段的带宽（读写 Q/K/V/score/prob/out）：单头 $4SH + 2S^2$，多头 $4SH + 2NS^2$，差异同样来自 $N$ 倍的注意力矩阵。
+
+*与 KV cache 的关系*
+
+每个 token 的 KV cache 大小：单头存 $[H]$，多头存 $[N, D]$，但 $N \times D = H$，所以 **KV cache 大小完全相同**。但多头在 decode 阶段有一个带宽优势：每个 head 的 attention 可以独立流水线化，GPU 可以在计算 head 0 时预取 head 1 的 KV 数据。单头只有一大块 $[L, H]$ 的 KV，无法拆分流水。
+
+*全维度汇总*
+
+| 维度 | 单头 vs 多头 | 根本原因 |
+|---|---|---|
+| 权重内存 | 多头多 33% | 多一个 $W_o$ |
+| 注意力矩阵内存 | 多头多 $N$ 倍 | $[S,S]$ → $[N,S,S]$ |
+| KV cache 大小 | **完全相同** | 投影后总维度都是 $H$ |
+| 投影带宽 | 多头多 33% | 多读写一次 $W_o$ |
+| Attention 带宽 | 多头多 $N$ 倍（score/prob） | 同注意力矩阵 |
+| decode 带宽利用率 | **多头更优** | 多 head 可流水线重叠 |
+| 总 FLOPs | 多头仅多 $2SH^2$ | 仅 $W_o$ 一项 |
+
+**核心结论**：多头 attention 用几乎相同的计算量（仅多一个 $W_o$），换来 $N$ 种不同的关注模式。真正的额外代价是注意力矩阵的 $N$ 倍内存膨胀，而 KV cache 大小完全不变。
 
 **在教学项目中的代码体现**
 
